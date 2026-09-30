@@ -1,6 +1,6 @@
 # wallet-web
 
-Статика проекта (SPA) — то, что раньше рендерил [wallet-bff](../wallet-bff)
+Статика проекта (SPA) — то, что раньше рендерил `wallet-bff`
 на сервере (HTML-шаблоны в C++), теперь плоские файлы (`site/`), отданные
 nginx. **wallet-bff как сервис упразднён** — после перехода на SPA у него не
 осталось ни одной причины оставаться отдельным процессом (см. "Куда делся
@@ -1085,7 +1085,7 @@ google-auth автоматически получили новый вид тем
 
 ## Маршрутизация через гейтвей
 
-В [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.) этот сервис — **фолбэк по умолчанию**:
+В [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway) этот сервис — **фолбэк по умолчанию**:
 всё, что не подошло под `/api/*`/`/auth/*`/`/admin/*`, идёт сюда (`/`,
 `/app.js`, `/style.css`, `/favicon.svg`) — см. `WALLET_WEB_URL` в его `.env`
 и `find_route()` в его `main.cpp`. Ровно та же роль, что раньше играл
