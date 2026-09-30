@@ -1,0 +1,940 @@
+/* Общий стиль для SPA (этот сервис) и оставшихся server-rendered страниц
+   google-auth (index/confirm-signup/ошибка/список пользователей) — раньше
+   каждый сервис держал свою копию этого файла (см. историю в README
+   wallet-web, "Откуда этот файл") — теперь один файл, один источник правды.
+   Ссылается на него любой сервис, чья страница открыта ЧЕРЕЗ ГЕЙТВЕЙ
+   (относительный путь "/style.css" резолвится в него только там, где
+   гейтвей маршрутизирует "всё остальное" сюда, в wallet-web) — см. README.
+
+   Палитра/формы — дизайн-система Organic из
+   servers/Design/.../Отчёты - веб.dc.html (_ds/organic-.../styles.css):
+   тёплый фон, карточки-поверхности с мягкой тенью, акцент терракота,
+   пилюльные кнопки/поля. Шрифты — БЕЗ Google Fonts (Caprasimo/Figtree в
+   макете): проект подчёркивает LAN-only MVP (org/docs/TODO_mobile_sync.md,
+   1.4), внешний запрос к fonts.googleapis.com этому противоречит — вместо
+   них системные стеки: --font-display приближает роль Caprasimo (крупные
+   суммы/заголовки, компактный округлый акцент) через `ui-rounded`, где он
+   есть (Apple), с обычным system-ui дальше по цепочке; --font-body — просто
+   системный sans-serif, роль Figtree в макете и так нейтральная. */
+:root {
+  --bg:#f5ead8; --surf:#fff8ec; --sand:#ebddc5; --sand2:#f0e6d4; --sand3:#e6dcc8;
+  --ink:#201e1d; --ink2:#474238; --ink3:#645c50; --ink4:#82796a; --ink5:#a19786; --ink6:#c0b6a5;
+  --acc:#c67139; --acc-d:#b2622d; --on-acc:#fff8ec;
+  --exp:#8c491a; --exp-tint:#ffe1d0; --exp-bar:#f2b48c;
+  --inc:#56633f; --inc-tint:#e1eecc; --inc-bar:#aebf92;
+  --l07:rgba(32,30,29,.07); --l10:rgba(32,30,29,.10); --l14:rgba(32,30,29,.14);
+  --sh:0 1px 2px rgba(46,43,37,.10); --sh2:0 3px 12px rgba(46,43,37,.10);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-display: ui-rounded, "SF Pro Rounded", "Segoe UI", var(--font-body);
+  color-scheme: light dark;
+}
+body {
+  margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-body); background: var(--bg); color: var(--ink);
+}
+/* Экран "Отчёты" (app.js::renderReports) — полноэкранный сайдбар-кабинет,
+   не карточка по центру, как все остальные экраны. body.reports-open
+   переключают ТОЛЬКО renderReports() (добавляет) и setWide() (снимает —
+   её вызывает любой другой рендер верхнего уровня, см. app.js). all:unset
+   на #app.card стирает саму карточку (фон/тень/паддинг/max-width) целиком,
+   дальше раскладку целиком задаёт .reports-shell внутри. */
+body.reports-open { align-items: stretch; justify-content: stretch; }
+body.reports-open #app.card { all: unset; display: block; width: 100%; min-height: 100vh; }
+
+.card {
+  background: var(--surf); border-radius: 24px; padding: 40px 36px; max-width: 460px;
+  box-shadow: var(--sh2); text-align: center;
+}
+.card.wide { max-width: 900px; text-align: left; }
+h1 { font-family: var(--font-display); font-size: 24px; font-weight: 700; margin: 0 0 8px; color: var(--ink); }
+.sub { color: var(--ink4); font-size: 14px; line-height: 1.5; margin-bottom: 24px; }
+.email { color: var(--ink4); margin: 0 0 12px; }
+.avatar { width: 88px; height: 88px; border-radius: 50%; margin-bottom: 16px; object-fit: cover; }
+/* Google-кнопка входа — сознательно НЕ перекрашена в акцент Organic: белый
+   фон/серая рамка — часть чужого бренд-гайда (Google), трогаем только форму
+   (радиус), чтобы не выбивалась среди остальных пилюль. */
+.google-btn {
+  display: inline-flex; align-items: center; gap: 10px; padding: 11px 22px;
+  border: 1px solid var(--l14); border-radius: 999px; text-decoration: none; color: #3c4043;
+  background: #fff; font-weight: 600; font-size: 14px; transition: box-shadow .15s;
+}
+.google-btn:hover { box-shadow: var(--sh2); }
+.badge { display: inline-block; padding: 4px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; margin: 8px 4px; }
+.badge.ok { background: var(--inc-tint); color: var(--inc); }
+.badge.warn { background: var(--exp-tint); color: var(--exp); }
+.badge.admin { background: #fef3e0; color: #a55b00; }
+.badge.support { background: #e8eaf6; color: #3949ab; }
+.badge.user { background: var(--sand2); color: var(--ink4); }
+.err { color: var(--exp); font-size: 15px; margin: 16px 0; line-height: 1.5; }
+.sub-id { color: var(--ink5); font-size: 12px; margin-top: 4px; }
+code, pre { background: var(--sand2); color: var(--ink2); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+pre { padding: 10px 12px; overflow-x: auto; text-align: left; }
+.btn {
+  display: inline-block; margin-top: 20px; padding: 10px 22px; border-radius: 999px; border: none;
+  background: var(--acc); color: var(--on-acc); text-decoration: none; font-size: 14px; font-weight: 700;
+}
+.btn:hover { background: var(--acc-d); }
+button.btn { cursor: pointer; font-family: inherit; }
+.btn-secondary { background: transparent; color: var(--ink3); border: 1.5px solid var(--l14); margin-left: 8px; }
+.btn-secondary:hover { background: var(--sand2); }
+.actions-row { display: flex; justify-content: center; gap: 0; }
+.note {
+  text-align: left; background: var(--sand2); border-radius: 14px; padding: 14px 16px;
+  font-size: 13px; color: var(--ink3); margin: 20px 0 4px; line-height: 1.5;
+}
+.users-table-wrap { overflow-x: auto; }
+/* table.reports-table (экран "Отчёты", см. app.js::renderReports) делит эти
+   правила с table.users (единственная другая таблица в SPA) — одно и то же
+   визуальное оформление, не повод заводить вторую копию. */
+table.users, table.reports-table { width: 100%; border-collapse: collapse; font-size: 14px; color: var(--ink2); }
+table.users th, table.users td,
+table.reports-table th, table.reports-table td { padding: 10px 10px; border-bottom: 1px solid var(--l10); text-align: left; }
+table.users th { cursor: pointer; user-select: none; color: var(--ink); white-space: nowrap; font-weight: 700; }
+table.users th .arrow { display: inline-block; width: 1em; opacity: .4; font-size: 11px; }
+table.users th.sorted .arrow { opacity: 1; }
+table.users tbody tr:hover, table.reports-table tbody tr:hover { background: var(--sand2); }
+table.users td .badge { margin: 0; padding: 2px 10px; font-size: 12px; }
+table.reports-table tfoot td { font-weight: 700; border-bottom: none; border-top: 2px solid var(--l14); color: var(--ink); }
+/* Кнопка "Разлогинить" на /admin/users (google-auth, см. его pages.cpp) —
+   тот же компактный "деструктивный" стиль, что у .wallet-list button ниже. */
+table.users .btn-force-logout {
+  border: none; background: none; color: var(--exp); cursor: pointer; font-size: 13px;
+  font-family: inherit; padding: 4px 8px; font-weight: 600;
+}
+table.users .btn-force-logout:disabled { color: var(--ink5); cursor: default; }
+/* "Посмотреть как клиент" — тот же компактный текстовый стиль, что и
+   .btn-force-logout выше, но акцентным цветом (не деструктивным): открывает
+   read-only просмотр, не отзывает ничего. */
+table.users .btn-view-as {
+  border: none; background: none; color: var(--acc); cursor: pointer; font-size: 13px;
+  font-family: inherit; padding: 4px 8px; font-weight: 600;
+}
+/* Баннер режима "Посмотреть как клиент" (app.js::viewAsBannerHtml) — вверху
+   .reports-header, той же тёплой "тревожной" плашкой, что --exp-tint уже
+   даёт предупреждениям на "Обзоре" (см. .eq-missing), только развёрнутой на
+   всю ширину шапки: постоянно на виду, пока открыты "Отчёты" под чужим
+   леджером — этот режим не должен быть легко забыть закрыть. */
+.view-as-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--exp-tint); color: var(--exp); border-radius: 12px;
+  padding: 10px 16px; margin-bottom: 14px; font-size: 14px;
+}
+.view-as-banner .btn-secondary { margin-left: auto; }
+/* Строка "своего" устройства на экране "Устройства" (app.js::renderDevices)
+   — тот же тинт, что у hover выше, только постоянный, не по наведению. */
+tr.device-current { background: var(--sand2); }
+
+/* Специфика SPA (wallet-web) — раньше этих классов не было ни у кого,
+   тут впервые (форма создания кошелька, список созданных за сессию). */
+.wallet-form { display: flex; gap: 8px; margin: 4px 0 16px; }
+.wallet-form input {
+  flex: 1; min-width: 0; padding: 10px 14px; border: 1px solid var(--l14); border-radius: 999px;
+  font-size: 14px; font-family: inherit; background: var(--surf); color: var(--ink);
+}
+.wallet-form input#currency { flex: 0 0 90px; text-transform: uppercase; }
+.wallet-list { list-style: none; margin: 0 0 8px; padding: 0; text-align: left; }
+.wallet-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 16px; border: 1px solid var(--l10); border-radius: 16px; margin-bottom: 8px;
+  font-size: 14px; background: var(--surf);
+}
+.wallet-list .wallet-id { color: var(--ink5); font-size: 11px; }
+.wallet-list button {
+  border: none; background: none; color: var(--exp); cursor: pointer; font-size: 13px;
+  font-family: inherit; padding: 4px 8px; font-weight: 600;
+}
+.wallet-empty { color: var(--ink5); font-size: 13px; margin: 8px 0 16px; }
+
+/* Содержимое экрана "Отчёты" (view-over/view-struct внутри .reports-body,
+   см. app.js::renderReports) — карточки/заголовки внутри самого сайдбар-
+   кабинета, раскладка которого задана ниже. */
+.report-section { margin: 24px 0; text-align: left; }
+.report-section h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; margin: 0 0 10px; color: var(--ink); }
+.report-section h3 {
+  font-size: 12px; margin: 20px 0 8px; color: var(--ink4); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+}
+.reports-controls { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.reports-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink4); font-weight: 600; }
+/* height/box-sizing — явные (не только padding, как раньше), иначе пикер
+   валюты эквивалента (внутри флаг-иконка 18×18, а не просто текст) диктует
+   свою высоту иконкой, а не строкой текста, как остальные поля — и на глаз
+   выглядит крупнее соседей вплоть до кнопки "Обновить" (по прямому запросу).
+   38px — то же значение, что у .currency-picker-btn ниже, единственного
+   поля строки, где это иначе не всплывающая иконка задавала бы высоту. */
+.reports-controls input, .reports-controls select {
+  height: 38px; box-sizing: border-box; padding: 9px 14px; border: 1px solid var(--l14); border-radius: 999px;
+  font-size: 14px; font-family: inherit; background: var(--surf); color: var(--ink);
+}
+.reports-controls .btn { height: 38px; box-sizing: border-box; display: inline-flex; align-items: center; }
+/* "~" — курса к валюте эквивалента не нашлось (число намеренно не
+   показывается), в отличие от "≈" (пересчитано по курсу) — см.
+   android-wallet/docs/ARCHITECTURE.md, "Три состояния эквивалента", та же разметка, что и
+   в Android-приложении. */
+.eq-missing { color: var(--ink5); }
+
+/* Пикер "Валюта эквивалента" (app.js::loadCurrencies/wireCurrencyPicker, по
+   прямому запросу — "флаг страны" в списке + чинить стрелку, которая
+   вылезала за границы) — свой выпадающий список вместо нативного <select>:
+   тот не умеет ни картинку внутри <option> ни само по себе управлять
+   позицией/шириной раскрывающегося списка. position:relative — точка
+   отсчёта для .currency-picker-list ниже (position:absolute). */
+.currency-picker { position: relative; }
+.currency-picker-btn {
+  display: flex; align-items: center; gap: 8px; height: 38px; box-sizing: border-box; padding: 9px 14px;
+  border: 1px solid var(--l14); border-radius: 999px; font-size: 14px; font-family: inherit;
+  background: var(--surf); color: var(--ink); cursor: pointer; white-space: nowrap;
+}
+.currency-picker-btn:hover { background: var(--sand2); }
+/* Свой SVG-шеврон вместо стрелки нативного <select> — та была за границей
+   элемента (по прямому запросу): здесь позиция полностью под контролем
+   разметки/flex, а не рендерера конкретного браузера/ОС. */
+.currency-picker-arrow { color: var(--ink4); flex: none; }
+.currency-picker-display { display: flex; align-items: center; gap: 8px; overflow: hidden; } /* класс, не id — тот же пикер повторно используется в "Настройках" под своим id */
+.currency-picker-flag {
+  width: 18px; height: 18px; background-size: 14px; background-color: var(--sand2); flex: none;
+}
+.currency-picker-list {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 230px; max-height: 280px;
+  overflow-y: auto; background: var(--surf); border: 1px solid var(--l14); border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .16); padding: 6px;
+}
+.currency-picker-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 10px; cursor: pointer; }
+.currency-picker-row:hover { background: var(--sand2); }
+.currency-picker-row.active { background: var(--sand3); }
+.currency-picker-row-flag { width: 20px; height: 20px; background-size: 15px; background-color: var(--sand2); flex: none; }
+.currency-picker-row-code { font-size: 13px; font-weight: 700; color: var(--ink); flex: none; }
+.currency-picker-row-name {
+  font-size: 12.5px; color: var(--ink4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* "Структура расходов" (app.js::renderStructureResult) — полоса доли под
+   именем категории в table.reports-table и цвет сдвига доли (Δ п.п.)
+   период-к-периоду. */
+.reports-bar { height: 6px; border-radius: 4px; background: var(--sand3); margin-top: 5px; overflow: hidden; }
+.reports-bar-fill { height: 6px; border-radius: 4px; background: var(--acc); }
+.delta-up { color: var(--exp); } /* доля выросла — тратили на эту категорию больше */
+.delta-down { color: var(--inc); } /* доля упала — тратили меньше */
+
+/* "Карта расходов" (app.js::renderTreemap/squarifyTreemap) — вкладка
+   "Структура", два столбца: карта + список (тот же приём, что и в дизайне,
+   1.6fr/1fr). Ниже 900px складываются в один столбец — сайдбар+две колонки
+   иначе не помещаются на среднем экране (дизайн сам заявляет min-width
+   1320px для десктопного кабинета, у нас мягче). */
+.structure-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .structure-grid { grid-template-columns: 1fr; } }
+.treemap-container { position: relative; height: 380px; width: 100%; border-radius: 16px; overflow: hidden; background: var(--sand2); }
+.treemap-tile {
+  position: absolute; box-sizing: border-box; overflow: hidden; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 1px; border: 2px solid var(--surf);
+}
+.treemap-tile-name { font-weight: 700; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.treemap-tile-sum { font-size: 11.5px; opacity: .88; white-space: nowrap; }
+.treemap-tile-pct { margin-top: auto; font-size: 11px; opacity: .8; }
+.treemap-note { margin: 8px 0 0; font-size: 11.5px; color: var(--ink5); min-height: 1em; }
+
+/* Иконка категории в списке "Категории" (app.js::categoryIconHtml) — круг
+   на подложке с картинкой по центру, тот же приём, что и в дизайне
+   (background, не <img>: не нашлась/не декодировалась — просто пустой
+   кружок подложки, без "сломанной картинки" браузера).
+   background-size — по прямому запросу заметно крупнее, чем в дизайне
+   (там ~58-64% диаметра кружка, отсюда и "лишний пустой отступ" вокруг
+   самой картинки): здесь и во всех остальных .*-icon ниже (.ops-row-icon/
+   .ops-top-icon/.cats-sel-icon/.cats-card-icon) — около 77-79% диаметра.
+   Диаметр самого кружка (width/height) НЕ трогали ни у одного из них —
+   именно он держит высоту строки/колонки сетки, увеличивать его значило
+   бы "в ущерб месту строки", как раз то, чего просили избежать. */
+.cat-name-row { display: flex; align-items: center; gap: 8px; }
+.cat-name-col { flex: 1; min-width: 0; }
+.cat-icon {
+  /* display:inline-block — без него пустой <span> остаётся inline-боксом
+     нулевой ширины (содержимого-то нет), и width/height просто игнорируются
+     спекой CSS: внутри flex-контейнера (.cat-name-row, .wallet-currency-head)
+     это скрывала блокификация инлайн-детей флексом, а внутри <td>/<h2>
+     (таблица "Курсы валют", заголовок пары) иконка была невидима, хотя
+     background-image грузился нормально. */
+  display: inline-block;
+  flex: none; width: 26px; height: 26px; border-radius: 999px; background-color: var(--sand2);
+  background-repeat: no-repeat; background-position: center; background-size: 20px;
+}
+
+/* "Иконки" (админ, app.js::renderAdminIcons) — витрина всех иконок сразу
+   (общих или пользователя), крупнее, чем .cat-icon в самих отчётах: здесь
+   иконка — единственное содержимое ячейки, а не подпись к операции. */
+.icon-admin-grid {
+  display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 20px;
+}
+.icon-admin-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; width: 84px;
+}
+.icon-admin-cat-icon {
+  width: 56px; height: 56px; background-size: 42px;
+}
+.icon-admin-name {
+  font-size: 12px; color: var(--ink5); text-align: center; word-break: break-word;
+}
+
+/* Сайдбар-кабинет "Отчётов" (app.js::renderReports) — структура сайдбара
+   (группы/пункты навигации) взята из servers/Design/.../Отчёты - веб.dc.html
+   (переменная VIEWS), но у нас реальные данные только под "Обзор" и
+   "Структура расходов" — остальные семь пунктов задизейблены (.nav-item:disabled,
+   бейдж "скоро"), не убраны, чтобы был виден масштаб задуманного отчёта. */
+.reports-shell { display: flex; align-items: stretch; min-height: 100vh; background: var(--bg); }
+.reports-sidebar {
+  width: 248px; flex: none; background: var(--surf); border-right: 1px solid var(--l10);
+  display: flex; flex-direction: column; position: sticky; top: 0; align-self: flex-start;
+  height: 100vh; overflow-y: auto; overflow-x: hidden;
+  transition: width .2s ease;
+}
+/* Сворачивание меню (app.js::setSidebarCollapsed, по прямому запросу) —
+   ширина в 0, а не display:none: так работает transition, и кнопка-триггер
+   (.sidebar-toggle-btn, в reports-header, ВНЕ этого элемента) остаётся
+   видна и кликабельна в обоих состояниях. */
+.reports-shell.sidebar-collapsed .reports-sidebar { width: 0; border-right: none; }
+.brand { padding: 24px 20px 16px; }
+.brand-kicker { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink5); }
+.brand-title { font-family: var(--font-display); font-size: 22px; color: var(--ink); margin-top: 2px; }
+.reports-nav { flex: 1; padding: 4px 12px; display: flex; flex-direction: column; gap: 16px; }
+.nav-group { display: flex; flex-direction: column; gap: 3px; }
+.nav-group-label {
+  padding: 6px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink5);
+}
+.nav-item {
+  display: block; width: 100%; text-align: left; border: none; cursor: pointer; background: transparent;
+  padding: 9px 12px; border-radius: 14px; font-size: 14px; color: var(--ink3); font-family: inherit;
+}
+.nav-item:hover:not(:disabled) { background: var(--sand2); }
+.nav-item.active { background: var(--acc); color: var(--on-acc); font-weight: 700; }
+.nav-item:disabled { color: var(--ink6); cursor: default; }
+.nav-item .soon {
+  float: right; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ink6);
+}
+.sidebar-footer { padding: 14px 20px 20px; border-top: 1px solid var(--l10); display: flex; flex-direction: column; gap: 10px; }
+.sidebar-footer .badge { margin: 0; align-self: flex-start; }
+.sidebar-footer .user-name {
+  font-size: 13px; font-weight: 700; color: var(--ink); margin: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-footer .btn, .sidebar-footer .btn-secondary { margin: 0; width: 100%; box-sizing: border-box; text-align: center; }
+
+/* Аватарка+имя (app.js::avatarHtml) — "угол" сайдбара, поверх кнопок
+   Кошельки/Выйти. Аватарка — настоящий <img> на внешний URL (Google), не
+   background-image, как у иконок категорий: тут не свой blob-стор, а чужой
+   хост, и alt/onerror нужны по-настоящему. onerror меняет <img> на кружок
+   с первой буквой имени (см. wireAvatarFallback) — пусто/битый URL/нет сети
+   до Google не оставляют дыру в интерфейсе. */
+.user-card { display: flex; align-items: center; gap: 10px; }
+.user-avatar, .user-avatar-fallback { width: 36px; height: 36px; border-radius: 999px; flex: none; }
+.user-avatar { object-fit: cover; background: var(--sand2); }
+.user-avatar-fallback {
+  background: var(--acc); color: var(--on-acc); font-weight: 700; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+}
+.user-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+
+.reports-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.reports-header {
+  position: sticky; top: 0; z-index: 5; background: rgba(245,234,216,.94); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--l10); padding: 20px 30px 16px;
+}
+.reports-header-top { display: flex; align-items: center; gap: 12px; }
+.reports-header h1 { font-family: var(--font-display); font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
+.reports-subtitle { font-size: 13px; color: var(--ink4); margin-top: 2px; }
+/* Кнопка сворачивания меню — живёт в reports-header (в reports-main), не
+   в самом сайдбаре: иначе при width:0 она пропадала бы вместе с ним и
+   развернуть меню обратно было бы нечем. */
+.sidebar-toggle-btn {
+  flex: none; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--l14);
+  background: var(--surf); color: var(--ink3); cursor: pointer; font-size: 16px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; font-family: inherit;
+}
+.sidebar-toggle-btn:hover { background: var(--sand2); }
+/* "Назад" (app.js::goReportsBack/pushReportsHistory, по прямому запросу) —
+   виден только когда есть куда возвращаться (см. updateReportsBackButton,
+   переключает атрибут hidden — обычный браузерный display:none, без своего
+   правила). Живёт рядом с ☰, не в самом заголовке — тот же принцип
+   позиционирования, что и у .sidebar-toggle-btn. */
+.reports-back-btn {
+  flex: none; height: 34px; padding: 0 14px; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: var(--surf); color: var(--ink3); cursor: pointer; font-size: 13px; font-weight: 600;
+  font-family: inherit;
+}
+.reports-back-btn:hover { background: var(--sand2); }
+.reports-body { padding: 22px 30px 60px; }
+
+/* "Обзор" (app.js::refreshPeriod/renderOverview*) — KPI-плитки, столбчатые
+   графики (месяцы/дни недели, обычные div'ы, без библиотек), "что
+   изменилось" (диврегирующая полоса) и мини-"Структура" (переиспользует
+   данные вкладки "Структура", см. lastStructureData). */
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+.kpi-tile { background: var(--surf); border-radius: 18px; padding: 16px 18px; box-shadow: var(--sh); }
+.kpi-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink4); }
+.kpi-value { font-family: var(--font-display); font-size: 24px; font-weight: 700; color: var(--ink); margin-top: 6px; }
+.kpi-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.kpi-sub { font-size: 12px; color: var(--ink4); }
+.kpi-chip { font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+.kpi-chip.chip-good { background: var(--inc-tint); color: var(--inc); }
+.kpi-chip.chip-bad { background: var(--exp-tint); color: var(--exp); }
+
+.overview-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+@media (max-width: 900px) { .kpi-grid { grid-template-columns: 1fr 1fr; } .overview-grid-2 { grid-template-columns: 1fr; } }
+/* "Кошельки" — 3 плитки (общий KPI "Курс на дату" убран, см. app.js::
+   renderWalletKpis), не 4, как у "Обзора" — своя раскладка, не трогает
+   .kpi-grid целиком. */
+#wallet-kpis.kpi-grid { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { #wallet-kpis.kpi-grid { grid-template-columns: 1fr 1fr; } }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.section-head h2 { margin: 0; }
+/* "Сравнить с" — переехал из шапки "Отчётов" сюда, к "Что изменилось
+   сильнее всего" (app.js::renderReports, по прямому запросу: было актуально
+   не для всех вкладок — в "Списке операций"/"Динамике"/"Категориях" не
+   нужен вовсе, а в шапке был виден везде). id `structure-cmp-mode` не
+   менялся — тот же элемент, что раньше жил в `.reports-controls`, читают
+   его и "Обзор" (KPI-чипы + эта панель), и "Категории" на "Структуре" (см.
+   refreshStructure) — просто из другого места разметки. */
+.section-head-select { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink4); font-weight: 600; flex: none; }
+.section-head-select select {
+  padding: 5px 10px; border: 1px solid var(--l14); border-radius: 999px; font-size: 12.5px; font-family: inherit;
+  background: var(--surf); color: var(--ink);
+}
+.link-btn { border: none; background: transparent; color: var(--exp); font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 0; }
+
+/* Столбчатые графики — "Расход по месяцам"/"По дням недели" делят одну
+   разметку (.month-chart/.month-bar-col/...), различаются только тем, одна
+   плашка в столбце или две (доход + расход). */
+.chart-legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink4); margin-bottom: 10px; }
+.legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; }
+.legend-dot.expense { background: var(--exp-bar); }
+.legend-dot.income { background: var(--inc-bar); }
+.legend-dot.balance { background: var(--acc); border-radius: 50%; }
+/* Пунктир под медиану расхода/дохода (renderMedianLines) — свой значок в
+   легенде, не .legend-dot: точка читалась бы как ещё один "остаток", а тут
+   именно линия-порог, и цвет уже занят у бара той же серии (currentColor,
+   не отдельная переменная). */
+.legend-line { display: inline-block; width: 12px; height: 0; margin-right: 6px; border-top: 2px dashed; vertical-align: middle; }
+.legend-line.expense { border-color: var(--exp-bar); }
+.legend-line.income { border-color: var(--inc-bar); }
+/* Значок полосы ±σ (renderStdDevBands) в хинте-крестике (wireMonthlyChartCrosshair,
+   строки "σ расхода"/"σ дохода") — та же полупрозрачная заливка, что и сама
+   область на графике, не .legend-dot/.legend-line: ни точка (это не порог в
+   одном месте), ни пунктир (это не линия) её не изображают, нужен именно
+   залитый прямоугольник. */
+.legend-band { display: inline-block; width: 12px; height: 9px; border-radius: 3px; margin-right: 6px; opacity: .4; vertical-align: middle; }
+.legend-band.expense { background: var(--exp-bar); }
+.legend-band.income { background: var(--inc-bar); }
+.month-chart { display: flex; align-items: flex-end; gap: 6px; height: 150px; position: relative; }
+/* "Остаток на конец месяца" на "Расходе по месяцам" (Обзор, по прямому
+   запросу — app.js::renderMonthlyBalanceLine) — SVG поверх уже
+   отрисованных flex-баров, координаты берутся из реального layout
+   (getBoundingClientRect), не пересчитываются вручную. pointer-events:none
+   на всём SVG целиком (включая точки — у них больше нет своего <title>, см.
+   wireMonthlyChartCrosshair ниже) — клики по барам (goToMonthDetail) и
+   mousemove для общего хинта проходят СКВОЗЬ линию, не перехватываются ей. */
+.month-chart-balance-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.month-chart-balance-svg polyline { fill: none; stroke: var(--acc); stroke-width: 2; }
+.month-chart-balance-svg circle { fill: var(--acc); }
+
+/* Медиана расхода/дохода (app.js::renderMedianLines) — тот же приём
+   SVG-оверлея, что и .month-chart-balance-svg выше, но БЕЗ круглых точек:
+   значение одно на весь график (не по бакетам), полноширинная пунктирная
+   линия в цвет своей серии — порог, а не траектория. */
+.month-chart-median-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.month-chart-median-svg line { stroke-width: 2; stroke-dasharray: 5 4; }
+.month-chart-median-svg line.expense { stroke: var(--exp-bar); }
+.month-chart-median-svg line.income { stroke: var(--inc-bar); }
+
+/* Полоса ±σ вокруг среднего (app.js::renderStdDevBands) — по прямому запросу
+   ("среднеквадратичное отклонение по обоим показателям в обзор"), после
+   обсуждения вариантов — полупрозрачная заливка в цвет своей серии, а не
+   числа в хинте. Низкая opacity — полоса кладётся ПОВЕРХ баров (тот же
+   слой position:absolute, что и остаток/медиана — красится над статичными
+   .month-bar-col независимо от порядка в DOM), плотная заливка забила бы
+   собственный цвет бара под ней. */
+.month-chart-band-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.month-chart-band-svg rect.expense { fill: var(--exp-bar); opacity: .18; }
+.month-chart-band-svg rect.income { fill: var(--inc-bar); opacity: .18; }
+
+/* Крестик-курсор "Расхода по месяцам" (по прямому запросу — "вместо хинта:
+   наведя мышку вертикальная линия и сразу хинт со значениями") — оба узла
+   создаются и позиционируются в JS (wireMonthlyChartCrosshair), здесь только
+   внешний вид. pointer-events:none на обоих — сами всплывашки не должны
+   мешать ни клику по бару под ними, ни следующему mousemove, который их же
+   и двигает. */
+.month-chart-crosshair {
+  position: absolute; top: 0; bottom: 0; width: 1px; background: var(--l14); pointer-events: none;
+}
+.month-chart-tooltip {
+  position: absolute; top: 0; z-index: 2; pointer-events: none; white-space: nowrap;
+  background: var(--surf); border: 1px solid var(--l14); border-radius: 10px; padding: 8px 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .14);
+}
+.month-chart-tooltip-title { font-size: 12px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+.month-chart-tooltip-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  font-size: 12px; color: var(--ink4);
+}
+.month-chart-tooltip-row + .month-chart-tooltip-row { margin-top: 3px; }
+.month-chart-tooltip-row b { color: var(--ink); font-weight: 700; }
+.month-bar-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+.month-bars { display: flex; align-items: flex-end; gap: 2px; height: 100%; width: 100%; }
+.month-bar { flex: 1; min-height: 2px; border-radius: 4px 4px 1px 1px; }
+.month-bar.expense { background: var(--exp-bar); }
+.month-bar.income { background: var(--inc-bar); }
+/* "Расход по месяцам" на "Обзоре" (app.js::renderOverviewMonthlyChart,
+   goToMonthDetail, по прямому запросу) — столбцы кликабельны, ведут на
+   "Динамику" с уже выбранным месяцем; тот же приём подсветки, что у
+   .dyn-bar-col ниже, здесь — только hover (сама панель месяц не выбирает и
+   не хранит). */
+.ov-bar-col { cursor: pointer; border-radius: 8px; }
+.ov-bar-col:hover { background: var(--sand2); }
+.month-label { font-size: 10px; color: var(--ink5); white-space: nowrap; }
+/* Прореженная подпись оси X (app.js::thinAxisLabels) — место под строку
+   подписей сохраняется, от её высоты считают геометрию оверлеи графика. */
+.month-label-hidden { visibility: hidden; }
+/* Много столбцов (app.js::thinAxisLabels, CHART_DENSE_COLS) — узкие зазоры,
+   иначе два года по дням вылезают за край графика одними зазорами. */
+.month-chart.month-chart-dense { gap: 1px; }
+.month-chart.month-chart-dense .month-bars { gap: 1px; }
+.month-chart.month-chart-dense .month-bar { border-radius: 1px 1px 0 0; }
+.month-chart.month-chart-ultra-dense { gap: 0; }
+.month-chart.month-chart-ultra-dense .month-bars { gap: 0; }
+
+/* "Что изменилось сильнее всего" — диврегирующая полоса на категорию: слева
+   (--inc-bar, зелёная) — стали тратить МЕНЬШЕ, справа (--exp-bar, оранжевая)
+   — БОЛЬШЕ; тот же приём и цвета, что в дизайне (m.wl/m.wr). */
+.moves-list { display: flex; flex-direction: column; gap: 10px; }
+/* 92px, не 78px — с тысячным разделителем и знаком валюты (по прямому
+   запросу, см. app.js::fmtEq) число стало длиннее, 78px обрезали бы его. */
+.move-row { display: grid; grid-template-columns: 26px 1fr 92px; align-items: center; gap: 9px; }
+.move-name { font-size: 13px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+.move-bar { display: flex; align-items: center; height: 8px; }
+.move-half { flex: 1; height: 8px; display: flex; overflow: hidden; }
+.move-half.left { justify-content: flex-end; border-radius: 4px 0 0 4px; }
+.move-half.right { border-radius: 0 4px 4px 0; }
+.move-fill { height: 8px; }
+.move-fill.down { background: var(--inc-bar); }
+.move-fill.up { background: var(--exp-bar); }
+.move-divider { width: 1px; height: 12px; background: var(--l14); flex: none; }
+.move-delta { text-align: right; font-size: 12.5px; font-weight: 700; }
+
+/* Мини-"Структура" на "Обзоре" — та же палитра категорий, что и карта
+   расходов (treemapTileColor), просто узкая полоса-стек вместо плиток. */
+.mini-struct-bar { display: flex; height: 14px; border-radius: 999px; overflow: hidden; gap: 1px; margin-bottom: 12px; }
+.mini-struct-list { display: flex; flex-direction: column; gap: 8px; }
+.mini-struct-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.mini-struct-dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.mini-struct-name { flex: 1; min-width: 0; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-struct-pct { color: var(--ink4); font-size: 12px; }
+
+/* "Динамика по месяцам" (app.js::refreshDynamics/renderDynamics*) — тот же
+   .month-chart, что и на "Обзоре", только шире (24 месяца, кликабельные
+   столбцы) и без линии "среднее за 3" из дизайна (см. комментарий в app.js,
+   зачем именно опущена). */
+.dyn-chart-wide { height: 190px; }
+.dyn-bar-col.selected { background: var(--sand2); }
+.dyn-sel-name { font-family: var(--font-display); font-size: 21px; font-weight: 700; color: var(--ink); margin-bottom: 12px; }
+.dyn-sel-stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--l07); }
+.dyn-stat-label { font-size: 11px; color: var(--ink4); }
+.dyn-stat-value { font-size: 17px; font-weight: 700; color: var(--ink); margin-top: 3px; }
+.dyn-sel-cats { display: flex; flex-direction: column; gap: 2px; }
+/* 96px, не 84px — тысячный разделитель + знак валюты (app.js::fmtEq)
+   удлинили сумму. */
+/* Кликабельна — ведёт на "Список операций" за этот месяц и эту статью (см.
+   app.js::goToOperationsForCategory); тот же приём hover, что у .ops-top-row. */
+.dyn-cat-row { display: grid; grid-template-columns: 26px 1fr 96px 66px; align-items: center; gap: 9px; padding: 6px 0; border-bottom: 1px solid var(--l07); cursor: pointer; border-radius: 8px; }
+.dyn-cat-row:hover { background: var(--sand2); }
+.dyn-cat-info { min-width: 0; }
+.dyn-cat-name { font-size: 13px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+.dyn-cat-sum { text-align: right; font-size: 13px; font-weight: 700; color: var(--ink); }
+.dyn-cat-delta { text-align: right; font-size: 11.5px; }
+
+.dyn-year-row { padding: 12px 0; border-bottom: 1px solid var(--l07); }
+.dyn-year-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+.dyn-year-name { font-family: var(--font-display); font-size: 19px; color: var(--ink); }
+.dyn-year-sub { font-size: 11.5px; color: var(--ink5); }
+.dyn-year-head .kpi-chip { margin-left: auto; }
+.dyn-year-bar-row { display: flex; align-items: center; gap: 10px; }
+.dyn-year-bar { flex: 1; height: 12px; border-radius: 6px; background: var(--sand3); overflow: hidden; }
+.dyn-year-bar-fill { height: 12px; border-radius: 6px; background: var(--exp); }
+.dyn-year-sum { width: 120px; text-align: right; font-size: 14px; font-weight: 700; color: var(--ink); }
+
+/* "Список операций" (app.js::renderOpsFilters/renderOpsList/renderOpsSidebar)
+   — список слева + узкий сайдбар-сводка ("Итого по фильтру"/"Статьи в
+   выборке"/детали выбранной операции) справа, тот же приём соотношения
+   колонок, что у .structure-grid. */
+.ops-grid { display: flex; gap: 14px; align-items: flex-start; }
+.ops-main { flex: 1; min-width: 0; }
+/* Липнет под .reports-header при прокрутке (по прямому запросу) —
+   --reports-header-h выставляет app.js::updateOpsSidebarStickyOffset (сама
+   высота шапки не константа: перенос строк в .reports-controls на узком
+   экране её меняет, чистым CSS не подогнать). max-height + overflow-y —
+   тот самый оговорённый случай "сайдбар глубже окна": тогда не прилипает
+   намертво поверх текста, а сам скроллится внутри своих границ. */
+.ops-sidebar {
+  width: 320px; flex: none; position: sticky; align-self: flex-start;
+  top: calc(var(--reports-header-h, 84px) + 14px);
+  max-height: calc(100vh - var(--reports-header-h, 84px) - 28px);
+  overflow-y: auto;
+}
+@media (max-width: 900px) {
+  .ops-grid { flex-direction: column; }
+  .ops-sidebar { width: 100%; position: static; max-height: none; overflow-y: visible; }
+}
+
+.ops-search-row input {
+  width: 100%; box-sizing: border-box; height: 40px; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: var(--bg); padding: 0 16px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none;
+}
+.ops-toolbar-row { display: flex; align-items: center; gap: 10px; margin: 12px 0 10px; }
+.ops-toolbar-row .link-btn { margin-left: auto; }
+.ops-seg-group { display: flex; gap: 4px; background: var(--sand); border-radius: 999px; padding: 3px; }
+.ops-seg-btn {
+  border: none; cursor: pointer; padding: 0 14px; height: 32px; border-radius: 999px; font-size: 13px;
+  background: transparent; color: var(--ink4); font-family: inherit;
+}
+.ops-seg-btn.active { background: var(--surf); color: var(--ink); font-weight: 700; }
+
+.ops-chip-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.ops-chip-group-wal { border-top: 1px solid var(--l07); padding-top: 11px; align-items: center; }
+.ops-chip {
+  border: none; cursor: pointer; padding: 0 12px; height: 28px; border-radius: 999px; font-size: 12.5px;
+  background: var(--sand); color: var(--ink3); font-family: inherit;
+}
+.ops-chip.active { background: var(--ink); color: var(--surf); }
+.ops-count { margin-left: auto; align-self: center; font-size: 12.5px; color: var(--ink5); }
+
+/* Строки списка, сгруппированные по дню — та же сетка icon/имя/время/сумма,
+   что и остальные строчные списки этого экрана (.dyn-cat-row, .move-row). */
+.ops-day { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+.ops-day:last-child { margin-bottom: 0; }
+.ops-day-head { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 7px; border-bottom: 1px solid var(--l10); }
+.ops-day-name { font-size: 14px; font-weight: 700; color: var(--ink); }
+.ops-day-dow { font-size: 12px; color: var(--ink5); }
+.ops-day-totals { margin-left: auto; display: flex; gap: 12px; font-size: 12.5px; font-weight: 700; }
+.ops-day-exp { color: var(--exp); }
+.ops-day-inc { color: var(--inc); }
+
+/* 132px, не 110px — тысячный разделитель + знак валюты (app.js::fmtEq/
+   formatEqAmount) удлинили обе строки в этой колонке. */
+.ops-row {
+  display: grid; grid-template-columns: 32px 1fr 64px 132px; align-items: center; gap: 12px;
+  padding: 9px 8px; margin: 0 -8px; border-radius: 14px; cursor: pointer;
+}
+.ops-row:hover, .ops-row.selected { background: var(--sand2); }
+.ops-row-icon { width: 32px; height: 32px; background-size: 25px; flex: none; }
+.ops-row-icon-transfer {
+  border-radius: 999px; background: var(--sand2); display: flex; align-items: center; justify-content: center;
+  color: var(--ink4); font-size: 18px;
+}
+.ops-row-main { min-width: 0; }
+.ops-row-name { font-size: 14px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-row-sub { font-size: 12px; color: var(--ink4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-row-time { font-size: 12.5px; color: var(--ink4); text-align: right; }
+.ops-row-amount { text-align: right; }
+.ops-row-amount > div:first-child { font-size: 15px; font-weight: 700; }
+.ops-row-eq { font-size: 11px; color: var(--ink5); margin-top: 2px; }
+
+/* Хвост "Списка операций" (infinite scroll, по прямому запросу — app.js::
+   renderOpsList/wireOpsInfiniteScroll) — .ops-sentinel сам НЕВИДИМ (1px,
+   нужен только IntersectionObserver'у как точка отсчёта "долистали почти до
+   низа"), .ops-list-status — текстовая подпись ("Загрузка ещё…"/"Это все
+   операции периода"), заменяет прежнюю кнопку "Показать ещё". */
+.ops-sentinel { height: 1px; }
+.ops-list-status {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 10px 0;
+  text-align: center; color: var(--ink4); font-size: 13px;
+}
+
+/* Сайдбар "Список операций" — три карточки (см. renderOpsSidebar): итоги по
+   фильтру, топ-5 статей в выборке (та же полоса доли, .reports-bar, что и в
+   "Структуре"), разбор выбранной операции (появляется, только если что-то
+   выбрано в списке слева). */
+.ops-totals-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 13px; color: var(--ink3); }
+.ops-totals-row span:last-child { font-size: 14px; font-weight: 700; color: var(--ink); }
+.ops-totals-net { border-top: 1px solid var(--l07); padding-top: 9px; margin-top: 2px; }
+
+.ops-top-list { display: flex; flex-direction: column; gap: 11px; }
+.ops-top-row { display: grid; grid-template-columns: 22px 1fr; gap: 9px; align-items: center; cursor: pointer; }
+.ops-top-icon { width: 22px; height: 22px; background-size: 17px; flex: none; }
+.ops-top-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ops-top-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ops-top-name { font-size: 12.5px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-top-sum { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+
+.ops-selected-head { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+.ops-selected-name { font-size: 14.5px; font-weight: 700; color: var(--ink); }
+.ops-selected-kind { font-size: 12px; color: var(--ink4); }
+.ops-selected-amount { font-family: var(--font-display); font-size: 26px; line-height: 1.05; margin-bottom: 11px; }
+.ops-selected-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid var(--l07); font-size: 12.5px; }
+.ops-selected-row span:first-child { color: var(--ink4); flex: none; }
+.ops-selected-row span:last-child { color: var(--ink2); text-align: right; }
+.ops-selected-note { font-size: 11.5px; line-height: 1.45; color: var(--ink4); border-top: 1px solid var(--l07); padding-top: 10px; margin-top: 6px; }
+
+/* "Категории во времени" (app.js::refreshCategories/renderCatsChart/
+   renderCatsCards) — заголовок+статистики выбранной категории и график на
+   24 месяца (.month-chart, тот же приём, что "Динамика"), карточки
+   12 крупнейших категорий ниже (та же сетка 4 колонки, что .kpi-grid). */
+.cats-sel-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.cats-sel-icon { width: 34px; height: 34px; background-size: 27px; flex: none; }
+.cats-sel-name { font-family: var(--font-display); font-size: 21px; font-weight: 700; color: var(--ink); }
+.cats-sel-stats { margin: 0 0 0 auto; padding-bottom: 0; border-bottom: none; }
+
+.cats-cards-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+@media (max-width: 900px) { .cats-cards-grid { grid-template-columns: 1fr 1fr; } }
+.cats-card {
+  background: var(--surf); border-radius: 18px; padding: 14px 16px; box-shadow: var(--sh);
+  display: flex; flex-direction: column; gap: 10px; cursor: pointer; border: 2px solid transparent;
+}
+.cats-card:hover { background: var(--sand2); }
+.cats-card.active { border-color: var(--acc); }
+.cats-card-head { display: flex; align-items: center; gap: 8px; }
+.cats-card-icon { width: 24px; height: 24px; background-size: 19px; flex: none; }
+.cats-card-name { font-size: 13px; font-weight: 700; color: var(--ink2); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cats-card-bars { display: flex; align-items: flex-end; gap: 2px; height: 48px; }
+.cats-card-bar { flex: 1; min-height: 2px; border-radius: 3px 3px 1px 1px; background: var(--exp-bar); }
+.cats-card.active .cats-card-bar { background: var(--exp); }
+.cats-card-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.cats-card-sum { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+/* Первые 12 столбцов графика выбранной категории — период сравнения, не
+   текущий год (см. renderCatsChart) — приглушены, чтобы взгляд шёл сперва
+   на последние 12, как и на карточках ниже. */
+/* Приглушённые столбцы периода сравнения — по прямому запросу (2026-09-11,
+   генерализация "Категорий"/"Динамики" на любой выбранный период группировки
+   вместо фиксированных 12/24 месяцев) — общий класс, не свой на каждый
+   график: дублировать одно и то же правило под разными именами незачем.
+   Красит ОБА бара (расход/доход) — раньше здесь был только .expense, но
+   "Динамика" показывает и доход тоже. */
+.chart-bar-before .month-bar { opacity: .45; }
+/* Столбцы кликабельны — переход в "Список операций" за этот месяц/категорию
+   (app.js::wireCatsEvents/goToOperationsForCategory, по прямому запросу) —
+   тот же приём подсветки, что у .ov-bar-col. */
+.cats-bar-col { cursor: pointer; border-radius: 8px; }
+.cats-bar-col:hover { background: var(--sand2); }
+
+/* "Кошельки и остатки" (app.js::refreshWalletBalances/renderWalletTable) —
+   таблица кошельков без table.reports-table (нужна колонка-спарклайн,
+   которую <table> не даёт удобно сверстать) — та же CSS-grid строка, что и
+   в дизайне (Design/.../Отчёты - веб.dc.html, вид 'wal'), разметка через
+   div'ы: иконка / название+бейдж+валюта / 12-месячный спарклайн / на начало
+   / пришло / ушло / на конец+экв. */
+.wallet-table-head, .wallet-row {
+  display: grid; grid-template-columns: 36px minmax(180px, 1fr) 110px 100px 100px 100px 130px;
+  align-items: center; gap: 12px;
+}
+.wallet-table-head {
+  padding-bottom: 9px; border-bottom: 1px solid var(--l10); font-size: 10.5px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--ink5);
+}
+.wallet-table-head > span:nth-child(n+4) { text-align: right; }
+/* Сортировка кликом по заголовку (по прямому запросу) — та же идея, что
+   .nav-item.active/table.users th, но подсветка/стрелка только на активной
+   колонке, остальные заголовки остаются простым текстом. */
+.wallet-sort-th { cursor: pointer; user-select: none; }
+.wallet-sort-th:hover { color: var(--ink3); }
+.wallet-sort-th.sorted { color: var(--ink); }
+.wallet-sort-arrow { display: inline-block; margin-left: 3px; font-size: 9px; }
+/* Быстрый фильтр (по прямому запросу — "и по валюте фильтрует", например
+   EUR) — тот же инпут, что и .ops-search-row у "Списка операций". */
+.wallet-search-row { margin-bottom: 12px; }
+.wallet-search-row input {
+  width: 100%; box-sizing: border-box; height: 40px; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: var(--bg); padding: 0 16px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none;
+}
+.wallet-row { padding: 10px 8px; margin: 0 -8px; border-radius: 14px; cursor: pointer; }
+.wallet-row:hover { background: var(--sand2); }
+.wallet-row.archived { opacity: .6; }
+.wallet-row-icon { width: 34px; height: 34px; background-size: 21px; }
+.wallet-row-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.wallet-row-name-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.wallet-row-name { font-size: 14px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wallet-row-sub { font-size: 11.5px; color: var(--ink4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wallet-tag { flex: none; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.wallet-tag-archived { background: var(--sand3); color: var(--ink4); }
+.wallet-tag-norate { background: var(--exp-tint); color: var(--exp); }
+/* "Курсы валют" (app.js, renderCurList/renderCurDetail) — своя строка
+   контролов (не .wallet-search-row: там ровно один input на 100% ширины,
+   здесь несколько полей + кнопка в ряд) и цвет изменения курса, тот же
+   принцип "рост/падение", что и .kpi-chip.chip-good/chip-bad. */
+.cur-controls-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.cur-controls-row input { height: 40px; border-radius: 999px; border: 1.5px solid var(--l14); background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none; }
+.cur-add-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+.cur-add-form select, .cur-add-form input { height: 40px; border-radius: 999px; border: 1.5px solid var(--l14); background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none; }
+.cur-add-form input[type="number"] { width: 90px; }
+.cur-add-form input[type="text"] { width: 140px; }
+/* .btn/.btn-secondary несут margin-top:20px (расчёт на отдельно стоящую
+   кнопку под текстом) и margin-left:8px — в этих flex-строках это ломает
+   вертикальное выравнивание с 40px-полями (align-items:center центрирует
+   более высокий margin-box кнопки, визуально сдвигая её вниз) и задваивает
+   отступ поверх row-gap. Те же height/box-sizing/margin:0, что у
+   .reports-controls .btn, — кнопка "Применить"/"Сохранить"/"Отмена"
+   выравнивается по высоте и базовой линии с соседними полями (по прямому
+   запросу — "кнопки не выровнены"). */
+.cur-controls-row .btn, .cur-add-form .btn {
+  height: 40px; box-sizing: border-box; display: inline-flex; align-items: center; margin: 0;
+}
+.cur-delta-up { color: var(--inc); font-weight: 600; }
+.cur-delta-down { color: var(--exp); font-weight: 600; }
+
+/* График истории курса ("Курсы валют" → пара, cur-rate-chart) — та же
+   палитра линии/точек, что у .month-chart-balance-svg (остаток на "Обзоре"/
+   "Динамике"), cur-chart-selection — полупрозрачная область протяжки
+   (см. wireCurChart в app.js: тащишь по графику — сужаешь диапазон). */
+.cur-chart-wrap { margin: 4px 0 12px; }
+/* position:relative — точка привязки для .month-chart-crosshair/-tooltip,
+   которые wireChartCrosshair (тот же общий движок, что у столбчатых
+   графиков "Обзора"/"Динамики") вставляет сюда абсолютным позиционированием;
+   отдельная от .cur-chart-wrap обёртка, чтобы линия и хинт растягивались
+   только на высоту самого графика, а не прихватывали подписи дат снизу. */
+.cur-chart-plot { position: relative; }
+.cur-chart-svg { width: 100%; height: 160px; display: block; cursor: crosshair; touch-action: none; }
+.cur-chart-svg polyline { fill: none; stroke: var(--acc); stroke-width: 2; }
+.cur-chart-svg circle.cur-chart-point { fill: var(--acc); }
+.cur-chart-svg circle.cur-chart-point:hover { r: 4; }
+.cur-chart-selection { fill: var(--acc); opacity: .16; }
+.cur-chart-axis { display: flex; justify-content: space-between; margin-top: 2px; font-size: 12px; color: var(--ink4); }
+.cur-chart-minmax { font-size: 12px; color: var(--ink4); margin-top: 2px; }
+.wallet-spark { display: flex; align-items: flex-end; gap: 2px; height: 28px; }
+.wallet-spark-bar { flex: 1; min-height: 2px; border-radius: 2px; background: var(--sand3); }
+.wallet-spark-bar.current { background: var(--acc); }
+.wallet-col-amount { text-align: right; font-size: 13px; color: var(--ink4); }
+.wallet-col-inc { color: var(--inc); }
+.wallet-col-exp { color: var(--exp); }
+.wallet-col-end { text-align: right; }
+.wallet-col-end > div:first-child { font-size: 15px; font-weight: 700; }
+.wallet-col-eq { font-size: 11px; color: var(--ink4); margin-top: 2px; }
+
+/* Разбивка по валюте под таблицей — та же сетка 3 колонки, что и у KPI/
+   карточек категорий, просто своя ширина. */
+.wallet-currencies-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 900px) { .wallet-currencies-grid { grid-template-columns: 1fr; } }
+.wallet-currency-card { background: var(--surf); border-radius: 18px; padding: 14px 16px; box-shadow: var(--sh); display: flex; flex-direction: column; gap: 8px; }
+/* Нет курса на дату расчёта (по прямому запросу) — слегка розовый тон, тот
+   же признак "нет курса", что и .wallet-tag-norate в таблице кошельков
+   выше (не новый цвет — та же переменная --exp-tint/--exp). */
+.wallet-currency-card-norate { background: var(--exp-tint); }
+.wallet-currency-card-norate .wallet-currency-eq { color: var(--exp); }
+.wallet-currency-head { display: flex; align-items: center; gap: 8px; }
+/* Флаг валюты (по прямому запросу) — та же .cat-icon картинка-подложка, что
+   и currency-picker-row-flag у пикера валюты эквивалента, свой размер здесь. */
+.wallet-currency-flag { width: 22px; height: 22px; background-size: 16px; flex: none; }
+/* Вдвое крупнее .wallet-currency-flag — только заголовок открытой пары
+   (renderCurDetail), по прямому запросу ("значки слишком маленькие" именно
+   там). vertical-align:middle — рядом 18px текст h2, без него инлайновый
+   44px-блок выравнивался бы по базовой линии и торчал бы вверх. */
+.wallet-currency-flag-lg { width: 44px; height: 44px; background-size: 32px; flex: none; vertical-align: middle; }
+.wallet-currency-symbol { font-family: var(--font-display); font-size: 18px; color: var(--ink); }
+.wallet-currency-name { font-size: 12.5px; color: var(--ink3); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wallet-currency-pct { font-size: 11.5px; color: var(--ink5); }
+.wallet-currency-bar { height: 8px; border-radius: 4px; background: var(--sand3); overflow: hidden; }
+.wallet-currency-bar-fill { height: 8px; border-radius: 4px; }
+.wallet-currency-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wallet-currency-own { font-size: 14.5px; font-weight: 700; color: var(--ink); }
+.wallet-currency-eq { font-size: 11.5px; color: var(--ink4); }
+
+/* "Доступ и приглашения" (app.js::refreshAccess/renderAccessRoot,
+   org/docs/TODO_mobile_sync.md, Фаза 6) — единственная вкладка "Отчётов" без
+   графика/таблицы: карточки-поверхности (та же .wallet-currency-card идея,
+   background:var(--surf)+тень), не голые .report-section, как у остальных
+   вкладок — список участников/форма приглашения нужно визуально разделить. */
+.access-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 900px) { .access-grid { grid-template-columns: 1fr; } }
+.access-card { background: var(--surf); border-radius: 18px; padding: 18px 20px; box-shadow: var(--sh); margin-bottom: 16px; }
+.access-card:last-child { margin-bottom: 0; }
+.access-card h2 { font-family: var(--font-display); font-size: 17px; font-weight: 700; margin: 0 0 4px; color: var(--ink); }
+
+.access-member-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--l07); }
+.access-member-row:first-of-type { border-top: none; }
+.access-member-avatar {
+  flex: none; width: 38px; height: 38px; border-radius: 999px; background: var(--sand2); color: var(--ink2);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-family: var(--font-display);
+}
+.access-member-info { flex: 1; min-width: 0; }
+.access-member-email { font-weight: 700; font-size: 14px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.access-you { font-weight: 400; color: var(--ink5); }
+.access-member-joined { font-size: 12px; color: var(--ink4); margin-top: 4px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.access-member-joined .badge { margin: 0; padding: 2px 10px; font-size: 11px; }
+.access-member-actions { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Пилюльная кнопка-действие (сменить роль/сделать владельцем) — компактнее
+   .btn-secondary (та рассчитана на подпись экрана целиком, не на строку
+   таблицы). .access-danger — тот же .link-btn, но цвета "расход"/удаления. */
+.btn-chip {
+  border: 1.5px solid var(--l14); background: transparent; color: var(--ink3); cursor: pointer;
+  padding: 5px 13px; border-radius: 999px; font-size: 12.5px; font-family: inherit; font-weight: 600;
+}
+.btn-chip:hover { border-color: var(--acc); color: var(--acc); }
+.btn-chip:disabled { opacity: .5; cursor: default; }
+.access-danger { color: var(--exp); }
+
+/* Форма приглашения — радио-карточки роли (та же идея, что accRoleOpts в
+   макете) и пилюльный переключатель срока (accTtlOpts). */
+.access-role-options { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+.access-role-option {
+  display: flex; align-items: flex-start; gap: 11px; text-align: left; cursor: pointer; padding: 11px 13px;
+  border-radius: 16px; border: 1.5px solid var(--l14); background: transparent; font-family: inherit; width: 100%;
+  box-sizing: border-box;
+}
+.access-role-option.active { border-color: var(--acc); background: var(--sand2); }
+.access-role-option-dot {
+  flex: none; width: 16px; height: 16px; border-radius: 999px; border: 2px solid var(--acc);
+  margin-top: 1px; display: flex; align-items: center; justify-content: center;
+}
+.access-role-option-dot span { width: 8px; height: 8px; border-radius: 999px; background: transparent; }
+.access-role-option.active .access-role-option-dot span { background: var(--acc); }
+.access-role-option-name { display: block; font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.access-role-option-sub { display: block; font-size: 11.5px; color: var(--ink4); margin-top: 2px; }
+
+.access-ttl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.access-ttl-row > span { font-size: 12.5px; color: var(--ink3); }
+.access-ttl-group { display: flex; gap: 4px; background: var(--sand); border-radius: 999px; padding: 3px; }
+.access-ttl-btn {
+  border: none; cursor: pointer; padding: 0 12px; height: 28px; border-radius: 999px; font-size: 12.5px;
+  background: transparent; color: var(--ink4); font-family: inherit; font-weight: 400;
+}
+.access-ttl-btn.active { background: var(--surf); color: var(--ink); font-weight: 700; }
+
+.access-new-link { margin-top: 12px; padding: 12px; border-radius: 16px; background: var(--bg); }
+.access-new-link-value { font-size: 13px; color: var(--ink); word-break: break-all; margin-bottom: 8px; }
+.access-invite-row { padding: 12px; border-radius: 16px; background: var(--bg); margin-top: 8px; }
+.access-invite-row:first-of-type { margin-top: 0; }
+.access-invite-meta { font-size: 11.5px; color: var(--ink4); margin-bottom: 8px; }
+.access-invite-actions { display: flex; gap: 7px; }
+.wallet-currency-count { font-size: 11px; color: var(--ink5); }
+
+/* "Опасная зона" ("Настройки" → "Удалить аккаунт", app.js::renderSettings) —
+   единственная секция настроек, оформленная не как .report-section, а как
+   собственная тонированная карточка: она про необратимое действие, поэтому
+   должна визуально выделяться, а не сливаться со списком устройств/выбором
+   валюты рядом. --exp/--exp-tint — та же пара, что уже несёт смысл
+   "расход/удаление" везде в приложении (.err, .access-danger выше), не
+   отдельный "красный", придуманный только для этой кнопки. */
+.danger-zone {
+  background: var(--exp-tint); border: 1.5px solid var(--exp-bar); border-radius: 18px;
+  padding: 18px 20px; margin: 24px 0;
+}
+.danger-zone h2 { color: var(--exp); }
+.danger-zone p.sub { color: var(--ink3); margin-bottom: 14px; }
+.btn-danger {
+  background: var(--exp); color: var(--on-acc); border: none; cursor: pointer;
+  font-family: inherit;
+}
+.btn-danger:hover { filter: brightness(.92); }
+.btn-danger:disabled { opacity: .6; cursor: default; filter: none; }
+
+/* Карточка бота — под сеткой #access-root, отдельным блоком (см. app.js,
+   разметка view-acc). */
+.access-telegram-card { margin-top: 16px; }
+
+/* "Доступ и приглашения → Telegram-бот" (app.js, renderTelegramLinkBox). QR — на белом
+   фоне из самой SVG и без скруглений внутри: сканерам нужен контраст и
+   тихая зона по краям (margin в createSvgTag). На узком экране QR встаёт
+   над текстом. */
+.telegram-link { display: flex; gap: 24px; align-items: flex-start; margin-top: 16px; flex-wrap: wrap; }
+.telegram-qr { flex: 0 0 auto; width: 200px; max-width: 100%; }
+.telegram-qr svg { display: block; width: 100%; height: auto; border-radius: 12px; }
+.telegram-link-text { flex: 1 1 240px; min-width: 0; }
+.telegram-link-text p { margin: 0 0 12px; line-height: 1.5; }
+.telegram-ok { color: var(--inc); font-weight: 600; margin: 8px 0 12px; }
+#telegram-table { margin-bottom: 12px; }

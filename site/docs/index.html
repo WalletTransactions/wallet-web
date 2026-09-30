@@ -1,0 +1,38 @@
+<!doctype html>
+<!--
+  Swagger UI поверх ../openapi.yaml — статика, как и весь остальной site/
+  (см. wallet-web/README.md, "Документация"). В отличие от трёх
+  C++-сервисов (docs.cpp генерирует ту же страницу на лету) — здесь это
+  просто ещё один файл, который отдаёт nginx: у wallet-web нет своего кода,
+  который мог бы её сгенерировать, только статика.
+
+  Вендоренный бандл (не CDN) — ../vendor/swagger-ui/, см. его README
+  (версия/происхождение) — работает и без доступа наружу (LAN-only MVP,
+  org/docs/TODO_mobile_sync.md).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>wallet-web — API docs</title>
+<link rel="stylesheet" href="/vendor/swagger-ui/swagger-ui.css">
+<link rel="icon" type="image/png" sizes="32x32" href="/vendor/swagger-ui/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/vendor/swagger-ui/favicon-16x16.png">
+<style>body{margin:0;background:#fafafa}</style>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="/vendor/swagger-ui/swagger-ui-bundle.js"></script>
+<script src="/vendor/swagger-ui/swagger-ui-standalone-preset.js"></script>
+<script>
+window.onload = function () {
+  window.ui = SwaggerUIBundle({
+    url: "/openapi.yaml",
+    dom_id: "#swagger-ui",
+    presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+    layout: "StandaloneLayout",
+    tryItOutEnabled: true
+  });
+};
+</script>
+</body>
+</html>

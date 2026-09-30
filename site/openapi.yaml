@@ -1,0 +1,75 @@
+openapi: 3.1.0
+info:
+  title: wallet-web
+  version: "1.0.0"
+  description: |
+    Статическая SPA (nginx, `site/`) — у сервиса НЕТ собственного HTTP API.
+    `nginx.conf` содержит ровно один блок `location /` с SPA-фолбэком
+    (`try_files $uri $uri/ /index.html;`), никакого `proxy_pass` или
+    скриптинга. Единственный маршрут ниже — не "операция" в смысле REST, а
+    факт "отдаёт файл или index.html для клиентского роутера".
+
+    Сам `site/app.js` обращается к `/auth/*`, `/api/*`, `/admin/*` — это
+    ВСЕГДА через `wallet-gateway` (см. `wallet-gateway/openapi.yaml`),
+    контракты этих вызовов описаны в `google-auth/openapi.yaml` и
+    `wallet-api/openapi.yaml`, не здесь.
+
+    **Этот файл лежит внутри `site/`, не рядом с README** (в отличие от
+    остальных трёх сервисов проекта) — единственная копия физически там же,
+    откуда её реально отдаёт nginx (`root site/`, см. README "Запуск").
+    `/docs` и `/openapi.yaml` ниже технически подпадают под общий SPA-фолбэк
+    `/{path}` (как и любой другой файл в `site/`), но перечислены отдельно —
+    это осмысленные, стабильные адреса, а не случайное совпадение с общим
+    маршрутом.
+servers:
+  - url: http://localhost:8083
+    description: Прямой адрес контейнера (в проде отдаётся через wallet-gateway как статический фолбэк)
+
+tags:
+  - name: docs
+    description: "Отдача этой самой спеки и Swagger UI поверх неё (site/docs/index.html) — не часть API, чисто мета"
+  - name: spa
+    description: SPA — статика/фолбэк на index.html
+
+paths:
+  /docs:
+    get:
+      operationId: docs
+      summary: "Swagger UI поверх /openapi.yaml (эта самая страница) — site/docs/index.html"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: HTML-страница Swagger UI (вендоренный статический бандл, см. site/vendor/swagger-ui/README.md)
+          content:
+            text/html: {schema: {type: string}}
+
+  /openapi.yaml:
+    get:
+      operationId: openApiYaml
+      summary: "Эта самая спецификация — просто файл в site/, отдаётся как есть"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Текст этого файла
+          content:
+            application/yaml: {schema: {type: string}}
+
+  /{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+        description: Любой путь, включая пустой (корень) — SPA-роутер разбирает его на клиенте, не сервер
+    get:
+      operationId: getStaticAssetOrSpaFallback
+      summary: Статический файл, если существует, иначе index.html (SPA-фолбэк)
+      tags: [spa]
+      security: []
+      responses:
+        "200":
+          description: Файл из site/ (HTML/JS/CSS/SVG) или index.html как фолбэк для неизвестного пути
+          content:
+            "*/*": {schema: {type: string, format: binary}}
