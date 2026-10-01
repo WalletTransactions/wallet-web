@@ -1,3 +1,4 @@
 Containerfile
-.containerignore
+.dockerignore
 README.md
+.git
