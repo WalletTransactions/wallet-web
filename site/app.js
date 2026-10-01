@@ -4656,6 +4656,7 @@
         if (!res.ok) {
           var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
           err.status = res.status; // даёт вызывающему коду различать причины (см. acceptPendingInviteIfAny)
+          err.body = data; // доп. поля ошибки, напр. ledger_empty у 409 приглашения
           throw err;
         }
         return data;
@@ -6304,44 +6305,78 @@
     var token = getPendingInviteToken();
     if (!token) return Promise.resolve();
 
-    return apiJson('/api/invites/accept', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token }),
-    })
+    function accept(replaceEmptyLedger) {
+      return apiJson('/api/invites/accept', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token, replace_empty_ledger: replaceEmptyLedger }),
+      });
+    }
+
+    function acceptedAlert(result) {
+      if (result) window.alert('Приглашение принято — теперь у вас есть доступ к этому кошельку.');
+    }
+
+    return accept(false)
       .then(function (result) {
         clearPendingInviteToken();
-        if (result) window.alert('Приглашение принято — теперь у вас есть доступ к этому кошельку.');
+        acceptedAlert(result);
       })
       .catch(function (err) {
+        // Свой кошелёк пуст (ни одной записи, других участников нет) —
+        // заменить его приглашённым можно без потерь, но только с явного
+        // согласия: сервер удалит пустой кошелёк и примет приглашение одной
+        // транзакцией (wallet-api README, "Доступ и приглашения").
+        if (err.status === 409 && err.body && err.body.ledger_empty) {
+          var replace = window.confirm(
+            'У вас уже есть свой кошелёк, но он пуст. Удалить его и присоединиться ' +
+              'к кошельку, в который вас пригласили?'
+          );
+          if (replace) {
+            return accept(true)
+              .then(function (result) {
+                clearPendingInviteToken();
+                acceptedAlert(result);
+              })
+              .catch(function (retryErr) {
+                clearPendingInviteToken();
+                reportAcceptError(retryErr);
+              });
+          }
+        }
         clearPendingInviteToken();
-        // 409 — самая частая и самая непрозрачная причина ("почему я не вижу
-        // операций владельца?"): у принимающего уже есть свой кошелёк, и
-        // приглашение НЕ применилось (см. invites_repo::accept_invite,
-        // AcceptStatus::kAlreadyHasLedger — ссылка при этом остаётся рабочей
-        // для кого-то другого). Без явного объяснения пользователь просто
-        // остаётся в своём (обычно пустом) кошельке и не понимает, почему
-        // общий доступ "не сработал".
-        if (err.status === 409) {
-          window.alert(
-            'Приглашение не применено: у вас уже есть свой кошелёк, поэтому вы ' +
-              'продолжите видеть только свои операции, а не операции владельца ' +
-              'приглашения. Ссылка ещё действительна и её можно передать тому, у ' +
-              'кого своего кошелька нет.'
-          );
-          return;
-        }
-        if (err.status === 410) {
-          window.alert(
-            'Не удалось принять приглашение: ссылка больше не действует ' +
-              '(уже использована, отозвана или истёк срок действия). Попросите ' +
-              'владельца прислать новую.'
-          );
-          return;
-        }
-        window.alert('Не удалось принять приглашение: ' + err.message);
+        reportAcceptError(err);
       });
+
+    function reportAcceptError(err) {
+      // 409 — самая частая и самая непрозрачная причина ("почему я не вижу
+      // операций владельца?"): у принимающего уже есть свой кошелёк, и
+      // приглашение НЕ применилось (см. invites_repo::accept_invite,
+      // AcceptStatus::kAlreadyHasLedger — ссылка при этом остаётся рабочей
+      // для кого-то другого). Сюда попадаем, если кошелёк не пуст или
+      // пользователь отказался заменить пустой.
+      if (err.status === 409) {
+        var why = err.body && err.body.ledger_empty
+          ? 'у вас уже есть свой кошелёк'
+          : 'у вас уже есть свой кошелёк с записями — заменить его приглашённым нельзя';
+        window.alert(
+          'Приглашение не применено: ' + why + ', поэтому вы продолжите видеть ' +
+            'только свои операции, а не операции владельца приглашения. Ссылка ещё ' +
+            'действительна и её можно передать тому, у кого своего кошелька нет.'
+        );
+        return;
+      }
+      if (err.status === 410) {
+        window.alert(
+          'Не удалось принять приглашение: ссылка больше не действует ' +
+            '(уже использована, отозвана или истёк срок действия). Попросите ' +
+            'владельца прислать новую.'
+        );
+        return;
+      }
+      window.alert('Не удалось принять приглашение: ' + err.message);
+    }
   }
 
   function boot() {
