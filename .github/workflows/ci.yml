@@ -1,0 +1,34 @@
+# Сборка Docker-образа (nginx + статика) на каждый push в main и на pull
+# request, плюс проверка конфига nginx.
+#
+# Выкат и интеграционные тесты — не здесь: им нужен живой стек на машине
+# разработчика, это делает Jenkins (BuildPlatform). См. org/docs/TODO_ci.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # Только проверка, что образ собирается; никуда не публикуется.
+      - name: Build image
+        run: |
+          docker build -f Containerfile -t wallet-web:ci .
+
+      - name: Check nginx config
+        run: docker run --rm wallet-web:ci nginx -t
