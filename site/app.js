@@ -5646,6 +5646,10 @@
   // был буквальный литерал в обоих местах — вынесен один раз, чтобы
   // добавление вкладки не значило править два места по отдельности.
   var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cur', 'acc', 'icons'];
+  // Вкладки, не зависящие ни от периода, ни от валюты эквивалента (см.
+  // refreshCurrencyPairs/refreshAccess/refreshIcons — зовутся вне
+  // refreshPeriod) — на них фильтр в шапке скрыт (switchReportsView).
+  var PERIOD_FREE_VIEWS = ['cur', 'acc', 'icons'];
 
   // Заголовок/подзаголовок каждого пункта — то же TITLES из дизайна, но
   // текстом только у реализованных: у отключённых пунктов заголовок никогда
@@ -5853,6 +5857,11 @@
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-view') === view);
     });
+    // Фильтр периода (сводка + панель) — только на вкладках, которые от него
+    // зависят (по прямому запросу: на "Доступе и приглашениях" он был лишним
+    // и ломал вид шапки), см. PERIOD_FREE_VIEWS.
+    document.querySelector('.reports-header').classList.toggle('no-period', PERIOD_FREE_VIEWS.indexOf(view) >= 0);
+    updateOpsSidebarStickyOffset();
     var t = REPORTS_TITLES[view];
     document.getElementById('reports-title').textContent = t[0];
     document.getElementById('reports-subtitle').textContent = t[1];
@@ -5920,12 +5929,41 @@
     if (shell) shell.classList.toggle('nav-open', open);
   }
 
+  // Свёрнут ли фильтр периода на десктопе (по прямому запросу — "сделай
+  // фильтр сворачиваемым на вебе") — запоминается тем же приёмом, что и
+  // свёрнутый сайдбар (isSidebarCollapsed). По умолчанию раскрыт, как и было
+  // до сворачивания. На мобильной раскладке не читается и не пишется: там
+  // панель всегда стартует свёрнутой и сама закрывается после применения.
+  var FILTERS_COLLAPSED_KEY = 'reportsFiltersCollapsed';
+
+  function isPeriodPanelOpenByDefault() {
+    if (isMobileLayout()) return false;
+    try {
+      return localStorage.getItem(FILTERS_COLLAPSED_KEY) !== '1';
+    } catch (e) {
+      return true;
+    }
+  }
+
   function setPeriodPanelOpen(open) {
     var header = document.querySelector('.reports-header');
     if (!header) return;
     header.classList.toggle('filters-open', open);
     document.getElementById('period-summary-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
     updateOpsSidebarStickyOffset(); // высота липкой шапки поменялась
+    if (isMobileLayout()) return;
+    try {
+      localStorage.setItem(FILTERS_COLLAPSED_KEY, open ? '0' : '1');
+    } catch (e) {
+      // см. setSidebarCollapsed — просто не запомнится на следующую загрузку
+    }
+  }
+
+  // После "Обновить"/быстрого периода — на мобильной панель закрываем (она
+  // перекрывает отчёт), на десктопе оставляем как есть: там её свернули или
+  // развернули сознательно.
+  function closePeriodPanelOnMobile() {
+    if (isMobileLayout()) setPeriodPanelOpen(false);
   }
 
   // Быстрые периоды мобильной панели фильтра (см. renderReports,
@@ -6040,7 +6078,7 @@
       '</div>' +
       '</aside>' +
       '<main class="reports-main">' +
-      '<header class="reports-header">' +
+      '<header class="reports-header' + (isPeriodPanelOpenByDefault() ? ' filters-open' : '') + '">' +
       viewAsBannerHtml() +
       '<div class="reports-header-top">' +
       '<button type="button" class="sidebar-toggle-btn" id="sidebar-toggle-btn" ' +
@@ -6049,13 +6087,14 @@
       '<h1 id="reports-title"></h1>' +
       '</div>' +
       '<div class="reports-subtitle" id="reports-subtitle"></div>' +
-      // Мобильная сводка фильтра (по прямому запросу — "фильтры дат на
-      // мобильной плохи"): на узком экране .reports-controls целиком
-      // занимали полэкрана липкой шапки, поэтому там они свёрнуты за эту
-      // кнопку-строку ("01.09.2026 – 10.10.2026 · по месяцам · USD"), а
-      // раскрываются по тапу. На десктопе кнопка скрыта (style.css),
-      // контролы видны всегда, как и раньше.
-      '<button type="button" class="period-summary-btn" id="period-summary-btn" aria-expanded="false" ' +
+      // Сводка фильтра (по прямому запросу — "фильтры дат на мобильной
+      // плохи", потом "сделай фильтр сворачиваемым на вебе"): кнопка-строка
+      // ("01.09.2026 – 10.10.2026 · по месяцам · USD"), по клику
+      // сворачивает/раскрывает .reports-controls (см. setPeriodPanelOpen,
+      // isPeriodPanelOpenByDefault). На узком экране контролы занимали
+      // полэкрана липкой шапки — там панель стартует свёрнутой.
+      '<button type="button" class="period-summary-btn" id="period-summary-btn" ' +
+      'aria-expanded="' + (isPeriodPanelOpenByDefault() ? 'true' : 'false') + '" ' +
       'aria-controls="reports-controls">' +
       '<span class="period-summary-text" id="period-summary-text"></span>' +
       '<svg class="currency-picker-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">' +
@@ -6063,9 +6102,8 @@
       'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
       '</button>' +
       '<div class="reports-controls" id="reports-controls" style="margin-top:14px">' +
-      // Быстрые периоды — только в мобильной панели (на десктопе скрыты в
-      // style.css): два нативных date-пикера подряд на телефоне — самый
-      // медленный способ выбрать "прошлый месяц". См. PERIOD_PRESETS.
+      // Быстрые периоды (см. PERIOD_PRESETS) — два date-пикера подряд
+      // самый медленный способ выбрать "прошлый месяц", особенно на телефоне.
       '<div class="period-presets" id="period-presets">' +
       PERIOD_PRESETS.map(function (p) {
         return '<button type="button" class="ops-chip" data-preset="' + p[0] + '">' + escapeHtml(p[1]) + '</button>';
@@ -6272,7 +6310,7 @@
         document.getElementById('period-from').value = range[0];
         document.getElementById('period-to').value = range[1];
         persistPeriodPreference();
-        setPeriodPanelOpen(false);
+        closePeriodPanelOnMobile();
         refreshPeriod();
       });
     });
@@ -6345,7 +6383,7 @@
     // в fetchReport), первый запрос под них в любом случае уйдёт в сеть.
     document.getElementById('period-refresh-btn').addEventListener('click', function () {
       reportsCache = {};
-      setPeriodPanelOpen(false);
+      closePeriodPanelOnMobile();
       refreshPeriod();
     });
     // Смена режима сравнения — тоже полный refreshPeriod() (он сам зовёт

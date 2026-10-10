@@ -844,7 +844,10 @@ tr.device-current { background: var(--sand2); }
 .access-card:last-child { margin-bottom: 0; }
 .access-card h2 { font-family: var(--font-display); font-size: 17px; font-weight: 700; margin: 0 0 4px; color: var(--ink); }
 
-.access-member-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--l07); }
+/* Кнопки действий — отдельной строкой под почтой (flex-basis 100%, отступ
+   под ширину аватарки): в одной строке с ними почта сжималась до "a…", а
+   дата "с 15 марта 2026 г." ломалась по словам в столбик. */
+.access-member-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 11px 0; border-top: 1px solid var(--l07); }
 .access-member-row:first-of-type { border-top: none; }
 .access-member-avatar {
   flex: none; width: 38px; height: 38px; border-radius: 999px; background: var(--sand2); color: var(--ink2);
@@ -854,8 +857,10 @@ tr.device-current { background: var(--sand2); }
 .access-member-email { font-weight: 700; font-size: 14px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .access-you { font-weight: 400; color: var(--ink5); }
 .access-member-joined { font-size: 12px; color: var(--ink4); margin-top: 4px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.access-member-joined .badge { margin: 0; padding: 2px 10px; font-size: 11px; }
-.access-member-actions { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.access-member-joined .badge { margin: 0; padding: 2px 10px; font-size: 11px; white-space: nowrap; }
+.access-member-joined span { white-space: nowrap; }
+.access-member-actions { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-left: 50px; box-sizing: border-box; }
+.access-member-actions:empty { display: none; }
 
 /* Пилюльная кнопка-действие (сменить роль/сделать владельцем) — компактнее
    .btn-secondary (та рассчитана на подпись экрана целиком, не на строку
@@ -944,7 +949,27 @@ tr.device-current { background: var(--sand2); }
    MOBILE_LAYOUT_QUERY в app.js (по ней ☰ решает: выдвинуть меню или
    свернуть сайдбар). Элементы ниже существуют в разметке всегда, на
    десктопе просто скрыты — так app.js не ветвит саму разметку по ширине. */
-.period-summary-btn, .period-presets, .reports-backdrop { display: none; }
+.reports-backdrop { display: none; }
+
+/* Сворачиваемый фильтр периода (по прямому запросу — сначала только на
+   мобильной, потом "сделай фильтр сворачиваемым на вебе"): строка-сводка
+   (даты · группировка · валюта) всегда видна, сами .reports-controls — только
+   при .filters-open (см. app.js::setPeriodPanelOpen). На десктопе состояние
+   запоминается, на мобильной панель всегда стартует свёрнутой. */
+.period-summary-btn {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; box-sizing: border-box; margin-top: 12px;
+  height: 34px; padding: 0 14px; border: 1px solid var(--l14); border-radius: 999px;
+  background: var(--surf); color: var(--ink2); font-family: inherit; font-size: 13px; cursor: pointer;
+}
+.period-summary-btn:hover { background: var(--sand2); }
+.period-summary-text { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.period-summary-btn .currency-picker-arrow { transition: transform .15s; }
+.reports-header.filters-open .period-summary-btn .currency-picker-arrow { transform: rotate(180deg); }
+.reports-header:not(.filters-open) .reports-controls { display: none; }
+/* Быстрые периоды — отдельной строкой над полями (flex-basis 100% внутри
+   flex-wrap .reports-controls). */
+.period-presets { display: flex; gap: 6px; flex-basis: 100%; flex-wrap: wrap; }
+.period-presets .ops-chip { flex: none; height: 30px; }
 
 @media (max-width: 720px) {
   /* Карточные экраны (вход/настройки/админка) — без полей по краям экрана
@@ -976,18 +1001,9 @@ tr.device-current { background: var(--sand2); }
   .reports-back-btn { padding: 0 10px; }
   .reports-body { padding: 14px 14px 40px; }
 
-  /* Фильтр периода: свёрнут в одну строку-сводку, по тапу раскрывается
-     панелью (.filters-open, см. setPeriodPanelOpen). */
-  .period-summary-btn {
-    display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; margin-top: 10px;
-    height: 38px; padding: 0 14px; border: 1px solid var(--l14); border-radius: 999px;
-    background: var(--surf); color: var(--ink2); font-family: inherit; font-size: 13px; cursor: pointer;
-  }
-  .period-summary-text { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .period-summary-btn .currency-picker-arrow { transition: transform .15s; }
-  .reports-header.filters-open .period-summary-btn .currency-picker-arrow { transform: rotate(180deg); }
+  /* Фильтр периода: сводка на всю ширину. */
+  .period-summary-btn { display: flex; width: 100%; margin-top: 10px; height: 38px; }
 
-  .reports-controls { display: none; }
   /* Раскрытая панель — сетка 2 колонки: "С"/"По" рядом, остальное на всю
      ширину. order — чтобы быстрые периоды и даты шли первыми, а валюта
      эквивалента (меняют реже всего) — в конце, без перестройки разметки. */
@@ -997,8 +1013,8 @@ tr.device-current { background: var(--sand2); }
     max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); overflow-y: auto;
   }
   .reports-controls > * { min-width: 0; }
-  .period-presets { display: flex; gap: 6px; overflow-x: auto; grid-column: 1 / -1; order: 0; padding-bottom: 2px; }
-  .period-presets .ops-chip { flex: none; height: 32px; }
+  .period-presets { flex-wrap: nowrap; overflow-x: auto; grid-column: 1 / -1; order: 0; padding-bottom: 2px; }
+  .period-presets .ops-chip { height: 32px; }
   .reports-controls label:has(#period-from), .reports-controls label:has(#period-to) { order: 1; }
   .reports-controls label:has(#period-group) { order: 2; grid-column: 1 / -1; }
   .reports-controls .currency-picker { order: 3; grid-column: 1 / -1; }
@@ -1046,6 +1062,10 @@ tr.device-current { background: var(--sand2); }
   .move-row { grid-template-columns: 26px 1fr auto; }
 
   .cur-controls-row input, .cur-add-form input, .cur-add-form select { flex: 1 1 140px; min-width: 0; font-size: 16px; }
-  .access-member-row { flex-wrap: wrap; }
   .access-ttl-row { flex-wrap: wrap; }
 }
+
+/* Вкладки без фильтра периода (app.js::PERIOD_FREE_VIEWS) — после
+   мобильного блока выше, чтобы перебить его .filters-open .reports-controls. */
+.reports-header.no-period .period-summary-btn,
+.reports-header.no-period .reports-controls { display: none; }
