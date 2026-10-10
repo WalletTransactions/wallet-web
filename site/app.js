@@ -2640,6 +2640,7 @@
     pushReportsHistory();
     document.getElementById('period-from').value = fromDateStr;
     document.getElementById('period-to').value = toDateStr;
+    updatePeriodSummary();
     switchReportsView('ops');
     refreshOperations(categoryUuid);
   }
@@ -2659,6 +2660,7 @@
   // structure-cmp-mode (см. renderReports) уже читает refreshStructure() тем
   // же способом, здесь тот же приём просто применён к пяти панелям вместо одной.
   function refreshPeriod() {
+    updatePeriodSummary();
     var kpisEl = document.getElementById('overview-kpis');
     var monthlyEl = document.getElementById('overview-monthly-chart');
     var movesEl = document.getElementById('overview-moves');
@@ -5904,6 +5906,74 @@
     }
   }
 
+  // Мобильная раскладка "Отчётов" (по прямому запросу — "адаптируй веб под
+  // мобильную версию") — та же граница, что и @media (max-width: 720px) в
+  // style.css: сайдбар там выдвижной, фильтр периода свёрнут в сводку.
+  var MOBILE_LAYOUT_QUERY = '(max-width: 720px)';
+
+  function isMobileLayout() {
+    return window.matchMedia(MOBILE_LAYOUT_QUERY).matches;
+  }
+
+  function setMobileNavOpen(open) {
+    var shell = document.getElementById('reports-shell');
+    if (shell) shell.classList.toggle('nav-open', open);
+  }
+
+  function setPeriodPanelOpen(open) {
+    var header = document.querySelector('.reports-header');
+    if (!header) return;
+    header.classList.toggle('filters-open', open);
+    document.getElementById('period-summary-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
+    updateOpsSidebarStickyOffset(); // высота липкой шапки поменялась
+  }
+
+  // Быстрые периоды мобильной панели фильтра (см. renderReports,
+  // #period-presets) — [ключ, подпись]; границы считает periodPresetRange.
+  var PERIOD_PRESETS = [
+    ['month', 'Этот месяц'],
+    ['prev-month', 'Прошлый месяц'],
+    ['3m', '3 месяца'],
+    ['12m', '12 месяцев'],
+    ['year', 'Этот год']
+  ];
+
+  // [from, to] в "yyyy-mm-dd" — тот же формат, что у <input type="date">.
+  // Конец — сегодня (кроме прошлого месяца), начало — первое число месяца,
+  // тот же принцип, что и у дефолтного периода (defaultPeriodFromIso).
+  function periodPresetRange(key) {
+    var now = new Date();
+    var today = isoDate(now);
+    var y = now.getFullYear();
+    var m = now.getMonth();
+    switch (key) {
+      case 'prev-month': return [isoDate(new Date(y, m - 1, 1)), isoDate(new Date(y, m, 0))];
+      case '3m': return [isoDate(new Date(y, m - 2, 1)), today];
+      case '12m': return [isoDate(new Date(y, m - 11, 1)), today];
+      case 'year': return [isoDate(new Date(y, 0, 1)), today];
+      default: return [isoDate(new Date(y, m, 1)), today];
+    }
+  }
+
+  // Текст свёрнутой мобильной сводки фильтра + подсветка совпавшего
+  // быстрого периода. Зовётся там, где фильтр ПРИМЕНЯЕТСЯ (refreshPeriod,
+  // goToOperationsForCategory), а не на каждый 'change' поля: сводка
+  // показывает то, по чему построены отчёты, а не недонабранные даты.
+  function updatePeriodSummary() {
+    var textEl = document.getElementById('period-summary-text');
+    if (!textEl) return;
+    var fromStr = document.getElementById('period-from').value;
+    var toStr = document.getElementById('period-to').value;
+    var groupEl = document.getElementById('period-group');
+    var groupText = groupEl.options[groupEl.selectedIndex] ? groupEl.options[groupEl.selectedIndex].text.toLowerCase() : '';
+    textEl.textContent = formatDate(fromStr) + ' – ' + formatDate(toStr) + ' · ' + groupText + ' · ' +
+      document.getElementById('eq-currency').value;
+    Array.prototype.forEach.call(document.querySelectorAll('#period-presets [data-preset]'), function (btn) {
+      var range = periodPresetRange(btn.getAttribute('data-preset'));
+      btn.classList.toggle('active', range[0] === fromStr && range[1] === toStr);
+    });
+  }
+
   // Стартовый экран после Google-логина (см. boot() — раньше здесь была
   // renderDashboard(), demo-CRUD "Кошельков"; убрана целиком, 2026-09-11,
   // см. её историю в git — кнопка "Настройки" ведёт на renderSettings()).
@@ -5979,7 +6049,28 @@
       '<h1 id="reports-title"></h1>' +
       '</div>' +
       '<div class="reports-subtitle" id="reports-subtitle"></div>' +
-      '<div class="reports-controls" style="margin-top:14px">' +
+      // Мобильная сводка фильтра (по прямому запросу — "фильтры дат на
+      // мобильной плохи"): на узком экране .reports-controls целиком
+      // занимали полэкрана липкой шапки, поэтому там они свёрнуты за эту
+      // кнопку-строку ("01.09.2026 – 10.10.2026 · по месяцам · USD"), а
+      // раскрываются по тапу. На десктопе кнопка скрыта (style.css),
+      // контролы видны всегда, как и раньше.
+      '<button type="button" class="period-summary-btn" id="period-summary-btn" aria-expanded="false" ' +
+      'aria-controls="reports-controls">' +
+      '<span class="period-summary-text" id="period-summary-text"></span>' +
+      '<svg class="currency-picker-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">' +
+      '<path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+      'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '</button>' +
+      '<div class="reports-controls" id="reports-controls" style="margin-top:14px">' +
+      // Быстрые периоды — только в мобильной панели (на десктопе скрыты в
+      // style.css): два нативных date-пикера подряд на телефоне — самый
+      // медленный способ выбрать "прошлый месяц". См. PERIOD_PRESETS.
+      '<div class="period-presets" id="period-presets">' +
+      PERIOD_PRESETS.map(function (p) {
+        return '<button type="button" class="ops-chip" data-preset="' + p[0] + '">' + escapeHtml(p[1]) + '</button>';
+      }).join('') +
+      '</div>' +
       // Пикер валюты — по прямому запросу ("флаг страны" в списке): обычный
       // <select> не умеет показывать иконку внутри <option> ни в одном
       // браузере, поэтому вместо него — кнопка + свой выпадающий список
@@ -6157,12 +6248,33 @@
       '</div>' +
       '</div>' +
       '</main>' +
+      // Затемнение под выдвижным меню — только на мобильной раскладке
+      // (style.css), тап по нему закрывает меню.
+      '<div class="reports-backdrop" id="reports-backdrop"></div>' +
       '</div>';
 
     switchReportsView(reportsView); // проставляет заголовок/активный пункт — саму разметку уже вставили выше
     wireAvatarFallback(currentUser);
+    // На мобильной раскладке ☰ не сворачивает сайдбар (его там и так нет в
+    // потоке), а выдвигает его поверх контента — и это состояние НЕ
+    // запоминается: открытое меню после перезагрузки на телефоне только мешало бы.
     document.getElementById('sidebar-toggle-btn').addEventListener('click', function () {
-      setSidebarCollapsed(!isSidebarCollapsed());
+      if (isMobileLayout()) setMobileNavOpen(!document.getElementById('reports-shell').classList.contains('nav-open'));
+      else setSidebarCollapsed(!isSidebarCollapsed());
+    });
+    document.getElementById('reports-backdrop').addEventListener('click', function () { setMobileNavOpen(false); });
+    document.getElementById('period-summary-btn').addEventListener('click', function () {
+      setPeriodPanelOpen(!document.querySelector('.reports-header').classList.contains('filters-open'));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#period-presets [data-preset]'), function (btn) {
+      btn.addEventListener('click', function () {
+        var range = periodPresetRange(btn.getAttribute('data-preset'));
+        document.getElementById('period-from').value = range[0];
+        document.getElementById('period-to').value = range[1];
+        persistPeriodPreference();
+        setPeriodPanelOpen(false);
+        refreshPeriod();
+      });
     });
 
     document.getElementById('settings-link-btn').addEventListener('click', renderSettings);
@@ -6187,7 +6299,10 @@
       });
     }
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (btn) {
-      btn.addEventListener('click', function () { switchReportsView(btn.getAttribute('data-view')); });
+      btn.addEventListener('click', function () {
+        switchReportsView(btn.getAttribute('data-view'));
+        setMobileNavOpen(false); // выбрали пункт — выдвижное меню больше не нужно (на десктопе no-op)
+      });
     });
 
     wireOpsEvents();
@@ -6230,6 +6345,7 @@
     // в fetchReport), первый запрос под них в любом случае уйдёт в сеть.
     document.getElementById('period-refresh-btn').addEventListener('click', function () {
       reportsCache = {};
+      setPeriodPanelOpen(false);
       refreshPeriod();
     });
     // Смена режима сравнения — тоже полный refreshPeriod() (он сам зовёт
