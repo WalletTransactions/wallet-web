@@ -90,6 +90,9 @@ table.users, table.reports-table { width: 100%; border-collapse: collapse; font-
 table.users th, table.users td,
 table.reports-table th, table.reports-table td { padding: 10px 10px; border-bottom: 1px solid var(--l10); text-align: left; }
 table.users th { cursor: pointer; user-select: none; color: var(--ink); white-space: nowrap; font-weight: 700; }
+table.users th.no-sort { cursor: default; }
+/* Выбор сортировки — только на телефоне, где заголовки таблицы скрыты (см. ниже). */
+.users-sort-mobile { display: none; }
 table.users th .arrow { display: inline-block; width: 1em; opacity: .4; font-size: 11px; }
 table.users th.sorted .arrow { opacity: 1; }
 table.users tbody tr:hover, table.reports-table tbody tr:hover { background: var(--sand2); }
@@ -950,6 +953,8 @@ tr.device-current { background: var(--sand2); }
    свернуть сайдбар). Элементы ниже существуют в разметке всегда, на
    десктопе просто скрыты — так app.js не ветвит саму разметку по ширине. */
 .reports-backdrop { display: none; }
+.mobile-tabbar { display: none; }
+.period-summary-text .ps-short { display: none; }
 
 /* Сворачиваемый фильтр периода (по прямому запросу — сначала только на
    мобильной, потом "сделай фильтр сворачиваемым на вебе"): строка-сводка
@@ -971,6 +976,33 @@ tr.device-current { background: var(--sand2); }
 .period-presets { display: flex; gap: 6px; flex-basis: 100%; flex-wrap: wrap; }
 .period-presets .ops-chip { flex: none; height: 30px; }
 
+/* Пользователи на телефоне (app.js::renderAdminTable): 14 колонок не влезали,
+   таблица уезжала вбок, кнопки — за край. Каждая строка — карточка: сверху имя
+   и email, ниже пары «подпись — значение» в две колонки (подпись — data-label
+   ячейки), внизу кнопки. Второстепенное (.cell-minor: регистрация, первая
+   операция, ID…) — только на десктопе. Сортировка — выпадающим списком. */
+@media (max-width: 720px) {
+  .users-sort-mobile { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--ink4); font-weight: 600; }
+  .users-sort-mobile select { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--l14); border-radius: 10px; background: var(--surf); font: inherit; color: var(--ink); }
+  .users-table-wrap { overflow-x: visible; }
+  #users-table, #users-table tbody { display: block; }
+  #users-table thead { display: none; }
+  #users-table tr {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px;
+    padding: 14px; margin-bottom: 10px; border: 1px solid var(--l10); border-radius: 16px; background: var(--surf);
+  }
+  #users-table tbody tr:hover { background: var(--surf); }
+  #users-table td { display: block; padding: 0; border: none; font-size: 13.5px; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+  #users-table td::before { content: attr(data-label); display: block; font-size: 11px; color: var(--ink5); font-weight: 600; margin-bottom: 1px; }
+  #users-table td.cell-minor { display: none; }
+  #users-table td.cell-name, #users-table td.cell-email, #users-table td.cell-actions { grid-column: 1 / -1; }
+  #users-table td.cell-name::before, #users-table td.cell-email::before, #users-table td.cell-actions::before { content: none; }
+  #users-table td.cell-name { order: -2; font-size: 16px; font-weight: 700; }
+  #users-table td.cell-email { order: -1; margin-top: -6px; color: var(--ink4); }
+  #users-table td.cell-actions { display: flex; gap: 8px; margin-top: 4px; }
+  #users-table td.cell-actions button { flex: 1; padding: 9px 8px; border-radius: 10px; background: var(--sand2); }
+}
+
 @media (max-width: 720px) {
   /* Карточные экраны (вход/настройки/админка) — без полей по краям экрана
      карточка в 460px упиралась бы в края телефона вплотную. */
@@ -978,31 +1010,66 @@ tr.device-current { background: var(--sand2); }
   .card { margin: 12px; padding: 28px 18px; border-radius: 20px; }
   .card.wide { max-width: none; }
 
-  /* Сайдбар — выдвижной поверх контента (.nav-open ставит setMobileNavOpen),
-     а не колонка в 248px, отнимающая у телефона больше половины ширины.
-     sidebar-collapsed (десктопное запомненное сворачивание) здесь не
-     действует — ширина своя. */
-  .reports-sidebar, .reports-shell.sidebar-collapsed .reports-sidebar {
-    position: fixed; left: 0; top: 0; z-index: 40; width: 280px; max-width: 85vw;
-    height: 100vh; height: 100dvh; border-right: 1px solid var(--l10);
-    transform: translateX(-100%); transition: transform .2s ease; box-shadow: none;
+  /* Навигация — нижняя панель вкладок (app.js::MOBILE_TABS), всегда на экране,
+     открывать и прятать её не нужно. ☰ на телефоне не нужен. */
+  .sidebar-toggle-btn { display: none; }
+  .mobile-tabbar {
+    display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    background: var(--surf); border-top: 1px solid var(--l10);
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
   }
-  .reports-shell.nav-open .reports-sidebar { transform: none; box-shadow: 0 0 32px rgba(0, 0, 0, .2); }
+  .mobile-tab {
+    display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0 4px;
+    border: none; background: transparent; color: var(--ink4); font-family: inherit; font-size: 11px; cursor: pointer;
+    border-radius: 12px; min-width: 0;
+  }
+  .mobile-tab span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-tab.active { color: var(--acc); font-weight: 700; }
+  #mobile-more-btn path { stroke-width: 3.2; } /* три точки — тонкой линией их почти не видно */
+
+  /* Сайдбар — шторка "Ещё" снизу (.nav-open ставит setMobileNavOpen): только
+     пункты, которых нет в панели вкладок, без "скоро" и без заголовка-бренда.
+     sidebar-collapsed (десктопное запомненное сворачивание) здесь не действует. */
+  .reports-sidebar, .reports-shell.sidebar-collapsed .reports-sidebar {
+    position: fixed; left: 0; right: 0; top: auto; bottom: 0; z-index: 40; width: auto; max-width: none;
+    height: auto; max-height: 80vh; max-height: 80dvh; border-right: none; border-radius: 22px 22px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    transform: translateY(100%); transition: transform .2s ease; box-shadow: none;
+  }
+  .reports-shell.nav-open .reports-sidebar { transform: none; box-shadow: 0 -8px 32px rgba(0, 0, 0, .2); }
+  .reports-sidebar .brand,
+  .reports-sidebar .nav-item:disabled,
+  .reports-sidebar .nav-item.in-tabbar,
+  .reports-sidebar .nav-group:not(:has(.nav-item[data-view]:not(.in-tabbar))) { display: none; }
+  .reports-nav { padding: 14px 12px 4px; gap: 10px; }
+  .sidebar-footer { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .sidebar-footer .user-card { flex-basis: 100%; }
+  .sidebar-footer .btn, .sidebar-footer .btn-secondary { flex: 1 1 0; width: auto; }
   .reports-backdrop {
     display: block; position: fixed; inset: 0; z-index: 35; background: rgba(32, 30, 29, .35);
     opacity: 0; pointer-events: none; transition: opacity .2s ease;
   }
   .reports-shell.nav-open .reports-backdrop { opacity: 1; pointer-events: auto; }
 
-  .reports-header { padding: 10px 14px 10px; }
-  .reports-header-top { gap: 8px; }
+  /* Шапка: заголовок и сводка фильтра в одной строке; при прокрутке вниз
+     шапка уезжает целиком (app.js::wireMobileHeaderOnce). */
+  .reports-header {
+    padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+    transition: transform .2s ease;
+  }
+  .reports-header.header-hidden { transform: translateY(-100%); }
+  .reports-header > .view-as-banner, .reports-header > .reports-controls { grid-column: 1 / -1; }
+  .reports-header-top { gap: 8px; min-width: 0; }
   .reports-header h1 { font-size: 19px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .reports-subtitle { display: none; }
   .reports-back-btn { padding: 0 10px; }
-  .reports-body { padding: 14px 14px 40px; }
+  /* Снизу — место под панель вкладок. */
+  .reports-body { padding: 14px 14px calc(84px + env(safe-area-inset-bottom)); }
 
-  /* Фильтр периода: сводка на всю ширину. */
-  .period-summary-btn { display: flex; width: 100%; margin-top: 10px; height: 38px; }
+  /* Сводка фильтра — короткая, справа от заголовка. */
+  .period-summary-btn { display: flex; margin-top: 0; height: 34px; padding: 0 12px; max-width: 60vw; font-size: 12.5px; }
+  .period-summary-text .ps-full { display: none; }
+  .period-summary-text .ps-short { display: inline; }
 
   /* Раскрытая панель — сетка 2 колонки: "С"/"По" рядом, остальное на всю
      ширину. order — чтобы быстрые периоды и даты шли первыми, а валюта

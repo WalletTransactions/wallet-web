@@ -205,48 +205,53 @@
   // Экран /admin/users (только Role::Admin, см. кнопку выше) — сшивает два
   // независимых источника по user_id/id:
   //  - GET /admin/users (google-auth) — email/роль/даты входа/сессии;
-  //  - GET /api/reports/admin/users (wallet-report) — кошельки/операции/
-  //    даты операций/участники леджера.
+  //  - POST /api/reports/admin/users/stats (wallet-report) — кошельки/операции/
+  //    даты операций/участники леджера, только по id из первого ответа.
   // Два отдельных сервиса, две отдельные базы (см. README wallet-report,
   // "Админ: агрегаты по пользователям...") — сшивание на клиенте вместо
-  // похода одного сервиса в базу другого, тем же принципом разделения, что
-  // и весь остальной проект. Один из двух ответов может не содержать
-  // строку для какого-то user_id (например, пользователь ни разу не
-  // синкал ни с одного устройства и потому ещё не владеет ни одним
-  // леджером) — statsByUserId.hasOwnProperty ниже, а не users.find,
-  // молча подставляет пустые счётчики в этом случае, не роняя всю таблицу.
+  // похода одного сервиса в базу другого.
+  //
+  // Последовательно, а не параллельно: статистике нужны id из списка. Раньше
+  // оба запроса шли разом, и wallet-report считал по ВСЕМ владельцам леджеров
+  // базы — на стенде с данными нагрузочного теста 15,8 с и 1 МБ ради двух
+  // строк. Список пользователей отвечает за миллисекунды, так что ожидание
+  // на него дешевле.
+  //
+  // Строки статистики для какого-то id может не быть (пользователь ни разу
+  // не синкал и ещё не владеет леджером) — statsByUserId.hasOwnProperty ниже
+  // подставляет пустые счётчики, не роняя таблицу. Сбой статистики тоже не
+  // роняет таблицу: email/роль важнее и без неё.
   function renderAdmin() {
     app.innerHTML = '<p class="sub">Загрузка…</p>';
 
-    var usersPromise = apiFetch('/admin/users', { credentials: 'include' }).then(function (res) {
-      if (res.status === 401) { renderLogin(); return null; }
-      return res.json().then(function (data) {
-        if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
-        return data;
-      });
-    });
-    // /api/reports/admin/users может ответить пустым списком (ни у кого нет
-    // леджера) — это не ошибка; сетевой сбой ЭТОГО запроса при этом не
-    // должен уронить всю таблицу пользователей (email/роль важнее и без
-    // него) — .catch превращает отказ в пустой список статистики, ниже
-    // просто не будет колонок кошельков/операций для НИКОГО.
-    var statsPromise = apiFetch('/api/reports/admin/users', { credentials: 'include' })
+    apiFetch('/admin/users', { credentials: 'include' })
       .then(function (res) {
-        if (!res.ok) return { users: [] };
-        return res.json();
+        if (res.status === 401) { renderLogin(); return null; }
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          return data;
+        });
       })
-      .catch(function () { return { users: [] }; });
-
-    Promise.all([usersPromise, statsPromise])
+      .then(function (usersData) {
+        if (!usersData) return null; // 401 — renderLogin() уже вызван выше
+        var ids = usersData.users.map(function (u) { return u.id; });
+        var statsPromise = ids.length === 0 ? Promise.resolve({ users: [] }) :
+          apiFetch('/api/reports/admin/users/stats', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_ids: ids }),
+          })
+            .then(function (res) { return res.ok ? res.json() : { users: [] }; })
+            .catch(function () { return { users: [] }; });
+        return statsPromise.then(function (statsData) { return [usersData, statsData]; });
+      })
       .then(function (results) {
-        var usersData = results[0];
-        if (!usersData) return; // 401 — renderLogin() уже вызван внутри usersPromise
-        var statsData = results[1];
-
+        if (!results) return;
         var statsByUserId = {};
-        statsData.users.forEach(function (s) { statsByUserId[s.user_id] = s; });
+        results[1].users.forEach(function (s) { statsByUserId[s.user_id] = s; });
 
-        renderAdminTable(usersData.users.map(function (u) {
+        renderAdminTable(results[0].users.map(function (u) {
           var s = statsByUserId.hasOwnProperty(u.id) ? statsByUserId[u.id] : null;
           u.wallet_count = s ? s.wallet_count : '';
           u.operation_count = s ? s.operation_count : '';
@@ -272,57 +277,71 @@
     return escapeHtml(String(value).slice(0, 19));
   }
 
+  function adminCountText(value) {
+    return value === '' || value === undefined ? '—' : escapeHtml(value);
+  }
+
+  // Колонки таблицы пользователей — одним списком: и заголовки, и подписи
+  // ячеек на телефоне (data-label, см. style.css "Пользователи на телефоне"),
+  // и пункты выбора сортировки. cls — роль ячейки в карточке на телефоне:
+  // name/email — шапка карточки, minor — скрыта (второстепенное, есть на
+  // десктопе), actions — кнопки внизу. sortable: false — колонка не
+  // сортируется (кнопки). num — сортировать как числа, а не как текст
+  // ("10" после "9", а не перед ним).
+  var ADMIN_COLUMNS = [
+    { label: 'Email', cls: 'cell-email', cell: function (u) { return escapeHtml(u.email); } },
+    { label: 'Имя', cls: 'cell-name', cell: function (u) { return escapeHtml(u.name); } },
+    { label: 'Роль', cell: function (u) { return roleBadgeHtml(u.role); } },
+    { label: 'Email подтверждён', cls: 'cell-minor', cell: function (u) { return u.email_verified ? 'да' : 'нет'; } },
+    { label: 'Регистрация', cls: 'cell-minor', cell: function (u) { return adminCellText(u.created_at); } },
+    { label: 'Последний вход', cell: function (u) { return adminCellText(u.last_login_at); } },
+    { label: 'Активных сессий', num: true, cell: function (u) { return String(u.active_sessions || 0); } },
+    { label: 'Кошельков', num: true, cell: function (u) { return adminCountText(u.wallet_count); } },
+    { label: 'Операций', num: true, cell: function (u) { return adminCountText(u.operation_count); } },
+    { label: 'Первая операция', cls: 'cell-minor', cell: function (u) { return adminCellText(u.first_operation_date); } },
+    { label: 'Последняя операция', cell: function (u) { return adminCellText(u.last_operation_date); } },
+    { label: 'Участников леджера', cls: 'cell-minor', num: true, cell: function (u) { return adminCountText(u.member_count); } },
+    { label: 'ID', cls: 'cell-minor', cell: function (u) { return '<code>' + escapeHtml(u.id) + '</code>'; } },
+    { label: 'Действия', cls: 'cell-actions', sortable: false, cell: function (u) {
+      return '<button type="button" class="btn-view-as" data-user-id="' + escapeHtml(u.id) +
+        '" data-user-email="' + escapeHtml(u.email) + '">Посмотреть как клиент</button> ' +
+        '<button type="button" class="btn-force-logout" data-user-id="' + escapeHtml(u.id) +
+        '" data-user-email="' + escapeHtml(u.email) + '">Разлогинить</button>';
+    } },
+  ];
+
   function renderAdminTable(users) {
     setWide(true);
     var rows = users
       .map(function (u) {
-        return (
-          '<tr>' +
-          '<td>' + escapeHtml(u.email) + '</td>' +
-          '<td>' + escapeHtml(u.name) + '</td>' +
-          '<td>' + roleBadgeHtml(u.role) + '</td>' +
-          '<td>' + (u.email_verified ? 'да' : 'нет') + '</td>' +
-          '<td>' + adminCellText(u.created_at) + '</td>' +
-          '<td>' + adminCellText(u.last_login_at) + '</td>' +
-          '<td>' + (u.active_sessions || 0) + '</td>' +
-          '<td>' + (u.wallet_count === '' ? '—' : escapeHtml(u.wallet_count)) + '</td>' +
-          '<td>' + (u.operation_count === '' ? '—' : escapeHtml(u.operation_count)) + '</td>' +
-          '<td>' + adminCellText(u.first_operation_date) + '</td>' +
-          '<td>' + adminCellText(u.last_operation_date) + '</td>' +
-          '<td>' + (u.member_count === '' ? '—' : escapeHtml(u.member_count)) + '</td>' +
-          '<td><code>' + escapeHtml(u.id) + '</code></td>' +
-          '<td>' +
-          '<button type="button" class="btn-view-as" data-user-id="' + escapeHtml(u.id) +
-          '" data-user-email="' + escapeHtml(u.email) + '">Посмотреть как клиент</button> ' +
-          '<button type="button" class="btn-force-logout" data-user-id="' + escapeHtml(u.id) +
-          '" data-user-email="' + escapeHtml(u.email) + '">Разлогинить</button>' +
-          '</td>' +
-          '</tr>'
-        );
+        return '<tr>' + ADMIN_COLUMNS.map(function (col) {
+          return '<td' + (col.cls ? ' class="' + col.cls + '"' : '') +
+            ' data-label="' + escapeHtml(col.label) + '">' + col.cell(u) + '</td>';
+        }).join('') + '</tr>';
       })
       .join('');
+
+    var headers = ADMIN_COLUMNS.map(function (col) {
+      return col.sortable === false ? '<th class="no-sort">' + col.label + '</th>' :
+        '<th>' + col.label + '<span class="arrow"></span></th>';
+    }).join('');
+
+    // Сортировка на телефоне — выпадающим списком: заголовки там скрыты
+    // (карточки вместо строк). Значение — "индекс колонки:направление".
+    var sortOptions = '<option value="">Как пришло</option>';
+    ADMIN_COLUMNS.forEach(function (col, i) {
+      if (col.sortable === false || col.cls === 'cell-minor') return;
+      sortOptions += '<option value="' + i + ':asc">' + col.label + ' ↑</option>' +
+        '<option value="' + i + ':desc">' + col.label + ' ↓</option>';
+    });
 
     app.innerHTML =
       '<h1>Пользователи</h1>' +
       '<p class="sub">Всего: ' + users.length + '. Клик по заголовку столбца сортирует таблицу.</p>' +
+      '<label class="users-sort-mobile">Сортировать: <select id="users-sort">' + sortOptions + '</select></label>' +
       '<div class="users-table-wrap">' +
       '<table class="users" id="users-table">' +
-      '<thead><tr>' +
-      '<th>Email<span class="arrow"></span></th>' +
-      '<th>Имя<span class="arrow"></span></th>' +
-      '<th>Роль<span class="arrow"></span></th>' +
-      '<th>Email подтверждён<span class="arrow"></span></th>' +
-      '<th>Регистрация<span class="arrow"></span></th>' +
-      '<th>Последний вход<span class="arrow"></span></th>' +
-      '<th>Активных сессий<span class="arrow"></span></th>' +
-      '<th>Кошельков<span class="arrow"></span></th>' +
-      '<th>Операций<span class="arrow"></span></th>' +
-      '<th>Первая операция<span class="arrow"></span></th>' +
-      '<th>Последняя операция<span class="arrow"></span></th>' +
-      '<th>Участников леджера<span class="arrow"></span></th>' +
-      '<th>ID<span class="arrow"></span></th>' +
-      '<th>Действия<span class="arrow"></span></th>' +
-      '</tr></thead>' +
+      '<thead><tr>' + headers + '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
       '</div>' +
@@ -356,38 +375,62 @@
     });
   }
 
-  // Сортировка кликом по заголовку — перенесено как есть из бывшей
-  // server-rendered страницы (google-auth/src/pages.cpp, до переезда сюда).
+  // Сортировка кликом по заголовку (десктоп) или выбором в #users-sort
+  // (телефон, заголовки скрыты) — один и тот же sortAdminTable.
   function wireAdminTableSorting() {
     var table = document.getElementById('users-table');
     if (!table) return;
-    var tbody = table.tBodies[0];
     var headers = table.tHead.rows[0].cells;
 
     Array.prototype.forEach.call(headers, function (th, colIndex) {
+      if (ADMIN_COLUMNS[colIndex].sortable === false) return;
       th.addEventListener('click', function () {
-        var ascending = th.getAttribute('data-order') !== 'asc';
-
-        Array.prototype.forEach.call(headers, function (other) {
-          other.removeAttribute('data-order');
-          other.classList.remove('sorted');
-          other.querySelector('.arrow').textContent = '';
-        });
-        th.setAttribute('data-order', ascending ? 'asc' : 'desc');
-        th.classList.add('sorted');
-        th.querySelector('.arrow').textContent = ascending ? '▲' : '▼';
-
-        var rows = Array.prototype.slice.call(tbody.rows);
-        rows.sort(function (rowA, rowB) {
-          var a = rowA.cells[colIndex].textContent.trim().toLowerCase();
-          var b = rowB.cells[colIndex].textContent.trim().toLowerCase();
-          if (a === b) return 0;
-          var cmp = a < b ? -1 : 1;
-          return ascending ? cmp : -cmp;
-        });
-        rows.forEach(function (row) { tbody.appendChild(row); });
+        sortAdminTable(table, colIndex, th.getAttribute('data-order') !== 'asc');
       });
     });
+
+    var select = document.getElementById('users-sort');
+    if (select) {
+      select.addEventListener('change', function () {
+        if (!select.value) return;
+        var parts = select.value.split(':');
+        sortAdminTable(table, Number(parts[0]), parts[1] === 'asc');
+      });
+    }
+  }
+
+  function sortAdminTable(table, colIndex, ascending) {
+    var tbody = table.tBodies[0];
+    var headers = table.tHead.rows[0].cells;
+    var numeric = !!ADMIN_COLUMNS[colIndex].num;
+
+    Array.prototype.forEach.call(headers, function (other) {
+      other.removeAttribute('data-order');
+      other.classList.remove('sorted');
+      var arrow = other.querySelector('.arrow');
+      if (arrow) arrow.textContent = '';
+    });
+    var th = headers[colIndex];
+    th.setAttribute('data-order', ascending ? 'asc' : 'desc');
+    th.classList.add('sorted');
+    th.querySelector('.arrow').textContent = ascending ? '▲' : '▼';
+
+    // Числа — числами: строкой "10" < "9". "—" (нет данных) — всегда в конце.
+    function key(row) {
+      var text = row.cells[colIndex].textContent.trim().toLowerCase();
+      if (text === '—') return null;
+      return numeric ? Number(text) : text;
+    }
+    var rows = Array.prototype.slice.call(tbody.rows);
+    rows.sort(function (rowA, rowB) {
+      var a = key(rowA), b = key(rowB);
+      if (a === b) return 0;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      var cmp = a < b ? -1 : 1;
+      return ascending ? cmp : -cmp;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
   }
 
   // Кнопка "Разлогинить" — POST /admin/users/:id/logout (см. admin.cpp),
@@ -5646,6 +5689,35 @@
   // был буквальный литерал в обоих местах — вынесен один раз, чтобы
   // добавление вкладки не значило править два места по отдельности.
   var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cur', 'acc', 'icons'];
+
+  // Нижняя панель вкладок мобильной раскладки (по прямому запросу — "меню
+  // неудобное: открыл — занимает много места, надо прятать ещё одним нажатием").
+  // [вид, подпись, path иконки 24×24]. Остальные пункты — в шторке "Ещё": это
+  // тот же сайдбар, на телефоне он выезжает снизу без пунктов, уже стоящих в
+  // панели, и без "скоро" (см. style.css, .in-tabbar).
+  var MOBILE_TABS = [
+    ['over', 'Обзор', 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z'],
+    ['ops', 'Операции', 'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01'],
+    ['struct', 'Структура', 'M12 3a9 9 0 1 0 9 9h-9zM15 3.5a9 9 0 0 1 5.5 5.5H15z'],
+    ['dyn', 'Динамика', 'M3 20h18M5 16l4-5 4 3 6-8']
+  ];
+
+  function isMobileTabView(view) {
+    return MOBILE_TABS.some(function (t) { return t[0] === view; });
+  }
+
+  function mobileTabbarHtml() {
+    function tab(attrs, label, path) {
+      return '<button type="button" class="mobile-tab" ' + attrs + '>' +
+        '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="' + path + '" fill="none" ' +
+        'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        '<span>' + escapeHtml(label) + '</span></button>';
+    }
+    return '<nav class="mobile-tabbar" id="mobile-tabbar">' +
+      MOBILE_TABS.map(function (t) { return tab('data-tab="' + t[0] + '"', t[1], t[2]); }).join('') +
+      tab('id="mobile-more-btn"', 'Ещё', 'M5 12h.01M12 12h.01M19 12h.01') +
+      '</nav>';
+  }
   // Вкладки, не зависящие ни от периода, ни от валюты эквивалента (см.
   // refreshCurrencyPairs/refreshAccess/refreshIcons — зовутся вне
   // refreshPeriod) — на них фильтр в шапке скрыт (switchReportsView).
@@ -5833,6 +5905,7 @@
     }
     return (
       '<button type="button" class="nav-item' + (view === reportsView ? ' active' : '') +
+      (isMobileTabView(view) ? ' in-tabbar' : '') +
       '" data-view="' + view + '">' + escapeHtml(label) + '</button>'
     );
   }
@@ -5857,6 +5930,11 @@
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-view') === view);
     });
+    Array.prototype.forEach.call(document.querySelectorAll('.mobile-tab[data-tab]'), function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-tab') === view);
+    });
+    var moreBtn = document.getElementById('mobile-more-btn');
+    if (moreBtn) moreBtn.classList.toggle('active', !isMobileTabView(view));
     // Фильтр периода (сводка + панель) — только на вкладках, которые от него
     // зависят (по прямому запросу: на "Доступе и приглашениях" он был лишним
     // и ломал вид шапки), см. PERIOD_FREE_VIEWS.
@@ -5966,6 +6044,37 @@
     if (isMobileLayout()) setPeriodPanelOpen(false);
   }
 
+  // Шапка "Отчётов" на телефоне (по прямому запросу — "фильтр дат занимает
+  // много места и так и не прячется"): прокрутка вниз прячет липкую шапку
+  // целиком и закрывает раскрытый фильтр, прокрутка вверх возвращает шапку;
+  // тап мимо раскрытого фильтра тоже его закрывает. Слушатели — на window/
+  // document, поэтому вешаются один раз на загрузку страницы, а не на каждый
+  // renderReports() (тот зовут при каждом заходе на "Отчёты").
+  var mobileHeaderWired = false;
+
+  function wireMobileHeaderOnce() {
+    if (mobileHeaderWired) return;
+    mobileHeaderWired = true;
+    var lastY = window.scrollY;
+
+    window.addEventListener('scroll', function () {
+      var header = document.querySelector('.reports-header');
+      var y = window.scrollY;
+      if (!header || !isMobileLayout()) { lastY = y; return; }
+      if (Math.abs(y - lastY) < 8) return; // дрожание пальца — не повод дёргать шапку
+      var hide = y > lastY && y > header.offsetHeight;
+      header.classList.toggle('header-hidden', hide);
+      if (hide && header.classList.contains('filters-open')) setPeriodPanelOpen(false);
+      lastY = y;
+    }, { passive: true });
+
+    document.addEventListener('click', function (ev) {
+      var header = document.querySelector('.reports-header');
+      if (!header || !isMobileLayout() || !header.classList.contains('filters-open')) return;
+      if (!header.contains(ev.target)) setPeriodPanelOpen(false);
+    });
+  }
+
   // Быстрые периоды мобильной панели фильтра (см. renderReports,
   // #period-presets) — [ключ, подпись]; границы считает periodPresetRange.
   var PERIOD_PRESETS = [
@@ -6004,8 +6113,13 @@
     var toStr = document.getElementById('period-to').value;
     var groupEl = document.getElementById('period-group');
     var groupText = groupEl.options[groupEl.selectedIndex] ? groupEl.options[groupEl.selectedIndex].text.toLowerCase() : '';
-    textEl.textContent = formatDate(fromStr) + ' – ' + formatDate(toStr) + ' · ' + groupText + ' · ' +
-      document.getElementById('eq-currency').value;
+    var currency = document.getElementById('eq-currency').value;
+    // Две версии: полная — на десктопе, короткая (год двумя цифрами, без
+    // группировки) — на телефоне, где сводка стоит в одной строке с заголовком.
+    var shortDate = function (iso) { return formatDate(iso).replace(iso.slice(0, 4), iso.slice(2, 4)); };
+    textEl.innerHTML =
+      '<span class="ps-full">' + escapeHtml(formatDate(fromStr) + ' – ' + formatDate(toStr) + ' · ' + groupText + ' · ' + currency) + '</span>' +
+      '<span class="ps-short">' + escapeHtml(shortDate(fromStr) + '–' + shortDate(toStr) + ' · ' + currency) + '</span>';
     Array.prototype.forEach.call(document.querySelectorAll('#period-presets [data-preset]'), function (btn) {
       var range = periodPresetRange(btn.getAttribute('data-preset'));
       btn.classList.toggle('active', range[0] === fromStr && range[1] === toStr);
@@ -6286,8 +6400,9 @@
       '</div>' +
       '</div>' +
       '</main>' +
-      // Затемнение под выдвижным меню — только на мобильной раскладке
-      // (style.css), тап по нему закрывает меню.
+      mobileTabbarHtml() +
+      // Затемнение под шторкой "Ещё" — только на мобильной раскладке
+      // (style.css), тап по нему закрывает шторку.
       '<div class="reports-backdrop" id="reports-backdrop"></div>' +
       '</div>';
 
@@ -6342,6 +6457,17 @@
         setMobileNavOpen(false); // выбрали пункт — выдвижное меню больше не нужно (на десктопе no-op)
       });
     });
+    Array.prototype.forEach.call(document.querySelectorAll('.mobile-tab[data-tab]'), function (btn) {
+      btn.addEventListener('click', function () {
+        switchReportsView(btn.getAttribute('data-tab'));
+        setMobileNavOpen(false);
+        window.scrollTo(0, 0);
+      });
+    });
+    document.getElementById('mobile-more-btn').addEventListener('click', function () {
+      setMobileNavOpen(!document.getElementById('reports-shell').classList.contains('nav-open'));
+    });
+    wireMobileHeaderOnce();
 
     wireOpsEvents();
     wireOpsInfiniteScroll();
