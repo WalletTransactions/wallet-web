@@ -607,6 +607,8 @@ tr.device-current { background: var(--sand2); }
 }
 .ops-chip.active { background: var(--ink); color: var(--surf); }
 .ops-count { margin-left: auto; align-self: center; font-size: 12.5px; color: var(--ink5); }
+/* Сводка фильтра — только на телефоне (см. ниже, "Фильтр операций на телефоне"). */
+.ops-filter-summary { display: none; }
 
 /* Строки списка, сгруппированные по дню — та же сетка icon/имя/время/сумма,
    что и остальные строчные списки этого экрана (.dyn-cat-row, .move-row). */
@@ -1112,8 +1114,24 @@ tr.device-current { background: var(--sand2); }
   .ops-toolbar-row { flex-wrap: wrap; }
   .ops-seg-group { max-width: 100%; overflow-x: auto; }
   .ops-seg-btn { flex: none; }
-  .ops-chip-group { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
-  .ops-chip { flex: none; }
+  /* Фильтр операций на телефоне (app.js::renderOpsFilters, opsFiltersOpen):
+     раньше чипы статей и кошельков шли одной строкой с прокруткой вбок — при
+     десятках категорий полоса уходила далеко за экран, а свернуть её было
+     нечем. Теперь — строка-сводка «Все статьи · Все кошельки · 120», по тапу
+     панель: чипы переносятся по строкам, длинный список статей прокручивается
+     внутри своей высоты, а не растягивает экран. */
+  .ops-filter-summary {
+    display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px; padding: 0 14px; height: 38px;
+    border: 1.5px solid var(--l14); border-radius: 999px; background: var(--surf); color: var(--ink2);
+    font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left;
+  }
+  .ops-filter-summary-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ops-filter-summary .currency-picker-arrow { flex: none; transition: transform .15s; }
+  #ops-filters.ops-filters-open .ops-filter-summary .currency-picker-arrow { transform: rotate(180deg); }
+  #ops-filters:not(.ops-filters-open) .ops-filter-panel { display: none; }
+  .ops-chip-group { flex-wrap: wrap; }
+  .ops-chip-group:not(.ops-chip-group-wal) { max-height: 34vh; overflow-y: auto; }
+  .ops-chip { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ops-day-head { flex-wrap: wrap; }
 
   /* "Кошельки и остатки": только иконка / имя / на конец — спарклайн и

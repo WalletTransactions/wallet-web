@@ -3055,8 +3055,30 @@
     );
   }
 
+  // Раскрыт ли фильтр «Операций» на телефоне (по прямому запросу — "при
+  // большом числе категорий фильтр широко уходит, и его не свернуть"). Там
+  // он стартует свёрнутым в одну строку-сводку (.ops-filter-summary), по тапу
+  // раскрывается панелью: чипы переносятся по строкам, длинный список статей
+  // прокручивается внутри своей высоты (style.css, "Фильтр операций на
+  // телефоне"). На десктопе не читается: там сводка скрыта, панель видна
+  // всегда.
+  var opsFiltersOpen = false;
+
+  function opsFilterSummaryText(filteredCount) {
+    var s = opsState;
+    var parts = [];
+    var type = OPS_TYPES.filter(function (t) { return t[0] === s.type; })[0];
+    if (type && s.type !== 'all') parts.push(type[1]);
+    var cat = s.cat && opsDistinctCategories().filter(function (c) { return c.uuid === s.cat; })[0];
+    parts.push(cat ? cat.name : 'Все статьи');
+    var wal = s.wal && opsDistinctWallets().filter(function (w) { return w.uuid === s.wal; })[0];
+    parts.push(wal ? wal.name : 'Все кошельки');
+    return parts.join(' · ') + ' · ' + filteredCount;
+  }
+
   function renderOpsFilters(filteredCount) {
     var el = document.getElementById('ops-filters');
+    el.classList.toggle('ops-filters-open', opsFiltersOpen);
     var s = opsState;
     var typeButtons = OPS_TYPES.map(function (t) {
       return (
@@ -3070,6 +3092,14 @@
       opsDistinctWallets().map(function (w) { return opsChipHtml('wal', w.uuid, w.name, s.wal === w.uuid); }).join('');
 
     el.innerHTML =
+      '<button type="button" class="ops-filter-summary" data-ops-action="toggle-filters" aria-expanded="' +
+      (opsFiltersOpen ? 'true' : 'false') + '">' +
+      '<span class="ops-filter-summary-text">' + escapeHtml(opsFilterSummaryText(filteredCount)) + '</span>' +
+      '<svg class="currency-picker-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">' +
+      '<path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+      'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '</button>' +
+      '<div class="ops-filter-panel">' +
       '<div class="ops-toolbar-row">' +
       '<div class="ops-seg-group">' + typeButtons + '</div>' +
       '<button type="button" class="link-btn" data-ops-action="clear">Сбросить</button>' +
@@ -3077,6 +3107,7 @@
       '<div class="ops-chip-group">' + catChips + '</div>' +
       '<div class="ops-chip-group ops-chip-group-wal">' + walChips +
       '<span class="ops-count">Найдено ' + filteredCount + '</span>' +
+      '</div>' +
       '</div>';
   }
 
@@ -3297,9 +3328,13 @@
       if (!el) return;
       var action = el.getAttribute('data-ops-action');
       var value = el.getAttribute('data-value');
-      if (action === 'type') { opsState.type = value; opsState.limit = 60; }
-      else if (action === 'cat') { opsState.cat = value || null; opsState.limit = 60; }
-      else if (action === 'wal') { opsState.wal = value || null; opsState.limit = 60; }
+      // Выбор статьи/кошелька на телефоне сворачивает фильтр обратно — как
+      // фильтр периода после «Обновить»: раскрытая панель закрывает список.
+      // Тип — переключатель из четырёх кнопок, его щёлкают подряд — не сворачиваем.
+      if (action === 'toggle-filters') { opsFiltersOpen = !opsFiltersOpen; }
+      else if (action === 'type') { opsState.type = value; opsState.limit = 60; }
+      else if (action === 'cat') { opsState.cat = value || null; opsState.limit = 60; opsFiltersOpen = false; }
+      else if (action === 'wal') { opsState.wal = value || null; opsState.limit = 60; opsFiltersOpen = false; }
       else if (action === 'clear') { opsState.q = ''; opsState.type = 'all'; opsState.cat = null; opsState.wal = null; opsState.limit = 60; document.getElementById('ops-search').value = ''; }
       else if (action === 'select-op') { opsState.sel = opsState.sel === value ? null : value; }
       else return;
