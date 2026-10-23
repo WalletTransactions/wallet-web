@@ -33,7 +33,8 @@ playwright-core через CDP (расширение Claude в Chrome недос
 В 2.1 в браузере подтверждены Р12, Р13, Р27; в 2.2 — Р11, Р14, Р15, Р26; в 2.3 — Р19, Р25 (на каждом F5), Р28, Р29; в 2.4 — Р31, новое Р39; в 2.5 — Р28, Р32, Р39 (для категорий); в 2.6 — Р20 (Р33 на живых данных
 не проявился: архивных кошельков нет); в 2.9 — Р36 (stats `2xx` без `users`
 даёт экран ошибки «Не удалось загрузить список пользователей»); в 2.10 —
-новое Р40 (список валют не закрывается после выбора).
+новое Р40 (список валют не закрывается после выбора); в 2.11 — Р17, Р36 («Как
+пришло» на телефоне).
 Период в проверках ставится полями и «Обновить», не через hash: иначе
 мешает гонка Р25.
 Телефон — окно 390×844 (медиа-запрос `max-width: 720px`), касания не
@@ -49,7 +50,7 @@ playwright-core через CDP (расширение Claude в Chrome недос
 - [x] 2.8 `ledger-access` — `refreshAccess`, `renderAccessRoot`, `access*`, `wireAccessEvents`
 - [x] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
 - [x] 2.10 `user-settings` — `renderSettings`, предпочтения валюты и даты, устройства (`loadSettingsDevices`, `wireRevoke*`), Telegram (`refreshTelegram`, `renderTelegram*`, `startTelegramPoll`), `wireDeleteAccount`
-- [ ] 2.11 `admin-users` — `renderAdmin`/`renderAdminTable`, сортировка, `wireAdminForceLogout`, `wireAdminViewAs`
+- [x] 2.11 `admin-users` — `renderAdmin`/`renderAdminTable`, сортировка, `wireAdminForceLogout`, `wireAdminViewAs`
 - [ ] 2.12 `static-hosting` — `nginx.conf`, `Containerfile`, `site/index.html`, `site/openapi.yaml`, CI; проверка — `docker build` и `curl -I` на `/`, `/app.js?v=…`, несуществующий путь
 
 ## 3. Итоговая проверка
