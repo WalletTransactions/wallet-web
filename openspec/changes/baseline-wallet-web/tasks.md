@@ -34,7 +34,10 @@ playwright-core через CDP (расширение Claude в Chrome недос
 не проявился: архивных кошельков нет); в 2.9 — Р36 (stats `2xx` без `users`
 даёт экран ошибки «Не удалось загрузить список пользователей»); в 2.10 —
 новое Р40 (список валют не закрывается после выбора); в 2.11 — Р17, Р36 («Как
-пришло» на телефоне).
+пришло» на телефоне); в 2.12 — Р38, новое Р41 (`/docs`). 2.12 — отдельный
+образ `wallet-web:verify` на `127.0.0.1:18083` (рабочий контейнер не
+трогался), сборка без подстановки версии падает, внешний запрос страницы —
+только аватарка Google.
 Период в проверках ставится полями и «Обновить», не через hash: иначе
 мешает гонка Р25.
 Телефон — окно 390×844 (медиа-запрос `max-width: 720px`), касания не
@@ -51,14 +54,14 @@ playwright-core через CDP (расширение Claude в Chrome недос
 - [x] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
 - [x] 2.10 `user-settings` — `renderSettings`, предпочтения валюты и даты, устройства (`loadSettingsDevices`, `wireRevoke*`), Telegram (`refreshTelegram`, `renderTelegram*`, `startTelegramPoll`), `wireDeleteAccount`
 - [x] 2.11 `admin-users` — `renderAdmin`/`renderAdminTable`, сортировка, `wireAdminForceLogout`, `wireAdminViewAs`
-- [ ] 2.12 `static-hosting` — `nginx.conf`, `Containerfile`, `site/index.html`, `site/openapi.yaml`, CI; проверка — `docker build` и `curl -I` на `/`, `/app.js?v=…`, несуществующий путь
+- [x] 2.12 `static-hosting` — `nginx.conf`, `Containerfile`, `site/index.html`, `site/openapi.yaml`, CI; проверка — `docker build` и `curl -I` на `/`, `/app.js?v=…`, несуществующий путь
 
 ## 3. Итоговая проверка
 
-- [ ] 3.1 `openspec validate baseline-wallet-web --strict`; проверка — change валиден
-- [ ] 3.2 Перечитать «Наблюдения» `design.md` после сверки: новые добавлены, ошибочные убраны; проверка — у каждого Р-пункта есть файл:строка
+- [x] 3.1 `openspec validate baseline-wallet-web --strict`; проверка — change валиден
+- [x] 3.2 Перечитать «Наблюдения» `design.md` после сверки: новые добавлены, ошибочные убраны; проверка — у каждого Р-пункта есть файл:строка
 
 ## Workflow follow-up
 
 - Заархивировать change (`/opsx:archive`) до применения `add-ai-expense-text`: спецификации переедут в `openspec/specs/`, и дельта ИИ ляжет поверх них.
-- Решить, какие из Р11–Р23 и Р25–Р40 оформлять отдельными changes; README- и комментарии-расхождения Р1–Р10, Р24 — одним change «README по коду».
+- Решить, какие из Р11–Р23 и Р25–Р41 оформлять отдельными changes; README- и комментарии-расхождения Р1–Р10, Р24 — одним change «README по коду».

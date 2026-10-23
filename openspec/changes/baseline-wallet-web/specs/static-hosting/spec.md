@@ -75,11 +75,11 @@ wallet-gateway сам обслуживает `/docs`, `/openapi.yaml` и
 `/vendor/swagger-ui/*` и спецификацию wallet-web в свой список не включает.
 
 #### Scenario: Открыта документация напрямую
-- **WHEN** пользователь открывает `/docs` на прямом адресе контейнера wallet-web
-- **THEN** показывается Swagger UI со спецификацией wallet-web
+- **WHEN** пользователь открывает `/docs/` на прямом адресе контейнера wallet-web
+- **THEN** показывается Swagger UI со спецификацией wallet-web (`/docs` без слэша nginx перенаправляет `301` на `/docs/`)
 
 #### Scenario: Документация через гейтвей
-- **WHEN** пользователь открывает `/docs` через wallet-gateway
+- **WHEN** пользователь открывает `/docs` (без слэша) через wallet-gateway
 - **THEN** показывается Swagger UI самого гейтвея, а не wallet-web
 
 ### Requirement: Без конфигурации окружения
