@@ -24,7 +24,8 @@
 playwright-core через CDP (расширение Claude в Chrome недоступно). Отказы
 сервера и необратимые действия (выход, приём приглашения) подменяются
 `page.route`, `alert`/`confirm` перехватываются и сверяются дословно.
-В 2.1 в браузере подтверждены Р12, Р13, Р27; в 2.2 — Р11, Р14, Р15, Р26; в 2.3 — Р19, Р25 (на каждом F5), Р28, Р29; в 2.4 — Р31, новое Р39; в 2.5 — Р28, Р32, Р39 (для категорий).
+В 2.1 в браузере подтверждены Р12, Р13, Р27; в 2.2 — Р11, Р14, Р15, Р26; в 2.3 — Р19, Р25 (на каждом F5), Р28, Р29; в 2.4 — Р31, новое Р39; в 2.5 — Р28, Р32, Р39 (для категорий); в 2.6 — Р20 (Р33 на живых данных
+не проявился: архивных кошельков нет).
 Период в проверках ставится полями и «Обновить», не через hash: иначе
 мешает гонка Р25.
 Телефон — окно 390×844 (медиа-запрос `max-width: 720px`), касания не
@@ -35,7 +36,7 @@ playwright-core через CDP (расширение Claude в Chrome недос
 - [x] 2.3 `reports-overview` — `refreshPeriod`, `renderOverview*`, `goToMonthDetail`
 - [x] 2.4 `operations-list` — `refreshOperations`, `ops*`, бесконечная подгрузка, `goToOperationsFor*`
 - [x] 2.5 `spending-analytics` — `refreshStructure`/`renderTreemap`, `refreshDynamics`/`renderDynamics*`, `refreshCategories`/`renderCats*`, общие `buildBuckets`/`reportsWindowWithComparison`
-- [ ] 2.6 `wallet-balances` — `refreshWalletBalances`, `buildWalletRows`, `renderWallet*`, `wireWalletEvents`
+- [x] 2.6 `wallet-balances` — `refreshWalletBalances`, `buildWalletRows`, `renderWallet*`, `wireWalletEvents`
 - [ ] 2.7 `currency-pairs` — `refreshCurrencyPairs`, `renderCur*`, `wireCurChart*`, `wireCurEvents`
 - [ ] 2.8 `ledger-access` — `refreshAccess`, `renderAccessRoot`, `access*`, `wireAccessEvents`
 - [ ] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
