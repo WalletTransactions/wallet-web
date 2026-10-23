@@ -25,12 +25,14 @@ playwright-core через CDP (расширение Claude в Chrome недос
 сервера и необратимые действия (выход, приём приглашения) подменяются
 `page.route`, `alert`/`confirm` перехватываются и сверяются дословно.
 Перехват записей — только предикатом по пути (любой не-GET к `/api`, `/auth`,
-`/admin`, кроме `/auth/refresh`), не glob: в 2.7 glob пропустил
+`/admin`, кроме читающих POST `/auth/refresh` и
+`/api/reports/admin/users/stats`), не glob: в 2.7 glob пропустил
 `DELETE /api/currency-pairs/{uuid}`, и пара ALLEUR была удалена на живом
 стенде (по решению владельца не восстанавливалась). Проверка после прогона —
 нет не-GET в `request_finished` логов wallet-api.
 В 2.1 в браузере подтверждены Р12, Р13, Р27; в 2.2 — Р11, Р14, Р15, Р26; в 2.3 — Р19, Р25 (на каждом F5), Р28, Р29; в 2.4 — Р31, новое Р39; в 2.5 — Р28, Р32, Р39 (для категорий); в 2.6 — Р20 (Р33 на живых данных
-не проявился: архивных кошельков нет).
+не проявился: архивных кошельков нет); в 2.9 — Р36 (stats `2xx` без `users`
+даёт экран ошибки «Не удалось загрузить список пользователей»).
 Период в проверках ставится полями и «Обновить», не через hash: иначе
 мешает гонка Р25.
 Телефон — окно 390×844 (медиа-запрос `max-width: 720px`), касания не
@@ -44,7 +46,7 @@ playwright-core через CDP (расширение Claude в Chrome недос
 - [x] 2.6 `wallet-balances` — `refreshWalletBalances`, `buildWalletRows`, `renderWallet*`, `wireWalletEvents`
 - [x] 2.7 `currency-pairs` — `refreshCurrencyPairs`, `renderCur*`, `wireCurChart*`, `wireCurEvents`
 - [x] 2.8 `ledger-access` — `refreshAccess`, `renderAccessRoot`, `access*`, `wireAccessEvents`
-- [ ] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
+- [x] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
 - [ ] 2.10 `user-settings` — `renderSettings`, предпочтения валюты и даты, устройства (`loadSettingsDevices`, `wireRevoke*`), Telegram (`refreshTelegram`, `renderTelegram*`, `startTelegramPoll`), `wireDeleteAccount`
 - [ ] 2.11 `admin-users` — `renderAdmin`/`renderAdminTable`, сортировка, `wireAdminForceLogout`, `wireAdminViewAs`
 - [ ] 2.12 `static-hosting` — `nginx.conf`, `Containerfile`, `site/index.html`, `site/openapi.yaml`, CI; проверка — `docker build` и `curl -I` на `/`, `/app.js?v=…`, несуществующий путь
