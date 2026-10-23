@@ -43,7 +43,7 @@ playwright-core через CDP (расширение Claude в Chrome недос
 - [x] 2.5 `spending-analytics` — `refreshStructure`/`renderTreemap`, `refreshDynamics`/`renderDynamics*`, `refreshCategories`/`renderCats*`, общие `buildBuckets`/`reportsWindowWithComparison`
 - [x] 2.6 `wallet-balances` — `refreshWalletBalances`, `buildWalletRows`, `renderWallet*`, `wireWalletEvents`
 - [x] 2.7 `currency-pairs` — `refreshCurrencyPairs`, `renderCur*`, `wireCurChart*`, `wireCurEvents`
-- [ ] 2.8 `ledger-access` — `refreshAccess`, `renderAccessRoot`, `access*`, `wireAccessEvents`
+- [x] 2.8 `ledger-access` — `refreshAccess`, `renderAccessRoot`, `access*`, `wireAccessEvents`
 - [ ] 2.9 `ledger-icons` — `refreshIcons`, `iconGridHtml`, `renderAdminIcons*`
 - [ ] 2.10 `user-settings` — `renderSettings`, предпочтения валюты и даты, устройства (`loadSettingsDevices`, `wireRevoke*`), Telegram (`refreshTelegram`, `renderTelegram*`, `startTelegramPoll`), `wireDeleteAccount`
 - [ ] 2.11 `admin-users` — `renderAdmin`/`renderAdminTable`, сортировка, `wireAdminForceLogout`, `wireAdminViewAs`
