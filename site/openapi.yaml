@@ -11,8 +11,9 @@ info:
 
     Сам `site/app.js` обращается к `/auth/*`, `/api/*`, `/admin/*` — это
     ВСЕГДА через `wallet-gateway` (см. `wallet-gateway/openapi.yaml`),
-    контракты этих вызовов описаны в `google-auth/openapi.yaml` и
-    `wallet-api/openapi.yaml`, не здесь.
+    контракты этих вызовов описаны в `google-auth/openapi.yaml`,
+    `wallet-api/openapi.yaml`, `wallet-report/openapi.yaml` и
+    `wallet-ai/openapi.yaml` (`/api/ai/*` — экран «ИИ»), не здесь.
 
     **Этот файл лежит внутри `site/`, не рядом с README** (в отличие от
     остальных трёх сервисов проекта) — единственная копия физически там же,

@@ -5683,6 +5683,705 @@
     });
   }
 
+  // --- «ИИ» (view 'ai', add-ai-expense-text) -------------------------------
+  // Пункт виден только по ответу GET /api/ai/status (wallet-ai): enabled и
+  // parse_expense в features. Статус — один раз при открытии "Отчётов", вне
+  // refreshPeriod (как refreshCurrencyPairs): от периода он не зависит, а
+  // остальные вкладки его не ждут. В режиме "Посмотреть как клиент" пункт
+  // скрыт всегда — запись ушла бы в кошелёк администратора, не клиента.
+  //
+  // aiStatus: null — ответа ещё нет, true/false — пункт показан/скрыт.
+  // aiRestorePending — F5 пришёл на #/reports/ai раньше ответа статуса:
+  // пока показан "Обзор", а когда статус придёт включённым — переключаемся
+  // на "ИИ", если пользователь за это время никуда не ушёл сам.
+  var aiStatus = null;
+  var aiRestorePending = false;
+
+  function setAiNavVisible(visible) {
+    var group = document.getElementById('nav-group-ai');
+    if (group) group.hidden = !visible;
+  }
+
+  function refreshAiStatus() {
+    aiStatus = null;
+    aiRestorePending = false; // просьбу восстановить "ИИ" ставит уже следующий switchReportsView (F5/popstate)
+    setAiNavVisible(false);
+    if (viewAsUser) {
+      aiStatus = false;
+      return;
+    }
+    apiFetch('/api/ai/status', { credentials: 'include' })
+      .then(function (res) {
+        if (!res.ok) return null; // 401/403/5xx — пункт просто скрыт, сессией займутся другие запросы
+        return res.json();
+      })
+      .then(function (data) {
+        return !!(data && data.enabled === true && Array.isArray(data.features) &&
+          data.features.indexOf('parse_expense') >= 0);
+      }, function () { return false; })
+      .then(function (enabled) {
+        if (!document.getElementById('nav-group-ai')) return; // "Отчёты" уже закрыты
+        aiStatus = enabled;
+        setAiNavVisible(enabled);
+        if (enabled && aiRestorePending && reportsView === 'over') {
+          isApplyingHistoryState = true;
+          switchReportsView('ai');
+          isApplyingHistoryState = false;
+          replaceReportsUrlState('ai');
+        }
+        aiRestorePending = false;
+      });
+  }
+
+  // --- «ИИ» → «Трата своими словами» ---------------------------------------
+  // Текст → задание parse_expense в wallet-ai → карточка черновика → запись
+  // операции в wallet-api (POST /sync/push), тем же путём, что телефон и бот.
+  // ИИ сам ничего не пишет: запись — только по кнопке "Записать". Если ИИ не
+  // справился — та же карточка, заполненная вручную.
+  //
+  // aiPhase: 'input' — поле ввода (под ним, может быть, "Записано: …" или
+  // причина отказа ИИ), 'parsing' — ждём задание, 'card' — карточка.
+  // aiAttempt — токен попытки: каждый старт и каждая отмена его увеличивают,
+  // ответ устаревшей попытки (отменённой, ушли с вкладки, закрыли "Отчёты")
+  // выбрасывается, а не рисуется поверх текущего экрана.
+  var AI_TEXT_MAX = 500;
+  var AI_LAST_WALLET_KEY = 'aiLastWalletUuid';
+  var aiPhase = 'input';
+  var aiText = '';
+  var aiAttempt = 0;
+  var aiJobId = null;
+  var aiFailure = null; // { message } — причина, почему черновика нет; под ней "Заполнить вручную"
+  var aiDoneLine = ''; // "Записано: …" после успешной записи
+  var aiCard = null; // см. aiNewCard
+  var aiAccounts = null; // { wallets, categories } из GET /api/reports/accounts
+
+  // UUID v4 через crypto.getRandomValues, не crypto.randomUUID: веб открывают
+  // по http в LAN, а там randomUUID нет (не secure context).
+  function uuidV4() {
+    var b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    var h = Array.prototype.map.call(b, function (x) { return (x < 16 ? '0' : '') + x.toString(16); }).join('');
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+  }
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function localTime(d) {
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  // Последний кошелёк, с которого записали трату в этом браузере, — уходит в
+  // default_wallet_uuid задания (у бота для этого /default). try/catch —
+  // приватный режим/заблокированное хранилище просто теряют подсказку.
+  function getAiLastWallet() {
+    try {
+      return localStorage.getItem(AI_LAST_WALLET_KEY) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setAiLastWallet(uuid) {
+    try {
+      localStorage.setItem(AI_LAST_WALLET_KEY, uuid);
+    } catch (e) {
+      // не запомнили — в следующий раз ИИ просто не получит подсказку
+    }
+  }
+
+  // Ответ "ИИ" дошёл, а "Отчёты" уже закрыты или пользователь на другой
+  // попытке — такой ответ никуда не рисуется.
+  function aiAttemptAlive(attempt) {
+    return attempt === aiAttempt && !!document.getElementById('ai-root');
+  }
+
+  // Сброс при каждом заходе на "Отчёты" (renderReports): незавершённое
+  // задание прошлого захода отменяется, карточка и текст не переживают ухода.
+  function resetAi() {
+    aiCancelParsing();
+    aiPhase = 'input';
+    aiText = '';
+    aiFailure = null;
+    aiDoneLine = '';
+    aiCard = null;
+    aiAccounts = null;
+  }
+
+  // Кошельки и категории для карточки — тот же /api/reports/accounts, что у
+  // бота, через fetchReport (кэш). Системные категории (Transfer, Transfer
+  // commission — system_kind 1/2) и архивные счета в списки не попадают.
+  function aiLoadAccounts(force) {
+    if (force) {
+      Object.keys(reportsCache).forEach(function (k) {
+        if (k.indexOf('accounts?') === 0) delete reportsCache[k];
+      });
+    }
+    return fetchReport('accounts', {}).then(function (data) {
+      if (!data) return null;
+      var live = data.accounts.filter(function (a) { return !a.is_archived; });
+      aiAccounts = {
+        wallets: live.filter(function (a) { return a.kind === 'wallet'; }),
+        categories: live.filter(function (a) { return a.kind === 'category' && a.system_kind === 0; }),
+      };
+      return aiAccounts;
+    });
+  }
+
+  function aiFindWallet(uuid) {
+    if (!aiAccounts || !uuid) return null;
+    for (var i = 0; i < aiAccounts.wallets.length; i++) if (aiAccounts.wallets[i].uuid === uuid) return aiAccounts.wallets[i];
+    return null;
+  }
+
+  function aiFindCategory(uuid) {
+    if (!aiAccounts || !uuid) return null;
+    for (var i = 0; i < aiAccounts.categories.length; i++) {
+      if (aiAccounts.categories[i].uuid === uuid) return aiAccounts.categories[i];
+    }
+    return null;
+  }
+
+  // Карточка: batch_id и uuid операции — один раз при показе, повтор записи
+  // после сбоя идёт с теми же значениями, и wallet-api вернёт тот же seq.
+  function aiNewCard(sourceText) {
+    var now = new Date();
+    return {
+      batchId: uuidV4(),
+      opUuid: uuidV4(),
+      sourceText: sourceText,
+      amount: '',
+      walletUuid: '',
+      categoryUuid: '',
+      date: isoDate(now),
+      time: localTime(now),
+      comment: sourceText,
+      walletHint: '', // подпись/причина у поля кошелька
+      walletAsk: false,
+      categoryAsk: false,
+      walletFirst: [], // uuid, которые resolver предложил первыми
+      walletForce: null, // { uuid, name } — "всё равно в «…»" при currency_mismatch
+      categoryFirst: [],
+      notes: [],
+      busy: false,
+      error: '',
+    };
+  }
+
+  var AI_NOTE_TEXT = {
+    currency_dropped: 'Валюта из текста не учтена — сумма записывается в валюте кошелька',
+    comment_truncated: 'Комментарий обрезан',
+  };
+
+  function aiCardFromDraft(result, sourceText) {
+    var card = aiNewCard(sourceText);
+    var e = result.expense || {};
+    var r = result.resolution || {};
+    card.amount = e.amount || '';
+    if (e.datetime && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(e.datetime)) {
+      card.date = e.datetime.slice(0, 10);
+      card.time = e.datetime.slice(11);
+    }
+    card.comment = e.comment || '';
+    card.notes = (result.notes || []).map(function (n) { return AI_NOTE_TEXT[n] || n; });
+
+    var cat = r.category || {};
+    if (cat.kind === 'found' && cat.found) card.categoryUuid = cat.found.uuid;
+    if (cat.kind === 'ask') card.categoryAsk = true;
+    card.categoryFirst = (cat.candidates || []).map(function (c) { return c.uuid; });
+
+    var w = r.wallet || {};
+    card.walletFirst = (w.candidates || []).map(function (c) { return c.uuid; });
+    if (w.kind === 'found' && w.found) {
+      card.walletUuid = w.found.uuid;
+      if (w.by_currency && e.currency_hint) card.walletHint = 'Выбран по валюте из текста (' + e.currency_hint + ')';
+    } else if (w.kind === 'ask') {
+      card.walletAsk = true;
+      if (w.why === 'currency_mismatch' && w.force) {
+        card.walletHint = 'В тексте ' + (e.currency_hint || '') + ', а «' + w.force.name + '» в ' + w.force.iso_code;
+        card.walletForce = { uuid: w.force.uuid, name: w.force.name };
+      }
+    } else if (w.kind === 'reject') {
+      if (w.why === 'no_wallet_in_currency') card.walletHint = 'Нет кошелька в ' + (e.currency_hint || 'этой валюте');
+      else if (w.why === 'no_wallets') card.walletHint = 'В кошельке нет ни одного счёта — создайте его в приложении';
+    }
+    return card;
+  }
+
+  // Проверки перед записью: сумма — положительное число не больше чем с
+  // precision знаками выбранного кошелька, дата и время — не в будущем.
+  function aiCardProblems(card) {
+    var p = { amount: false, date: false, missing: false };
+    var amount = card.amount.trim().replace(',', '.');
+    var wallet = aiFindWallet(card.walletUuid);
+    var m = /^(\d+)(?:\.(\d+))?$/.exec(amount);
+    if (!m || parseFloat(amount) <= 0) p.amount = true;
+    else if (wallet && m[2] && m[2].length > parseInt(wallet.precision || '2', 10)) p.amount = true;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(card.date) || !/^\d{2}:\d{2}(:\d{2})?$/.test(card.time)) {
+      p.date = true;
+    } else {
+      var t = card.time.length === 5 ? card.time + ':00' : card.time;
+      if (new Date(card.date + 'T' + t) > new Date()) p.date = true;
+    }
+    if (!wallet || !aiFindCategory(card.categoryUuid)) p.missing = true;
+    return p;
+  }
+
+  // Список: сначала предложенные resolver (в их порядке), затем
+  // "всё равно в «…»" (currency_mismatch), затем остальные по имени.
+  function aiOptionsHtml(items, selected, firstUuids, force, placeholder) {
+    var first = [];
+    firstUuids.forEach(function (u) {
+      items.forEach(function (a) { if (a.uuid === u && first.indexOf(a) < 0) first.push(a); });
+    });
+    var forced = null;
+    if (force) {
+      items.forEach(function (a) { if (a.uuid === force.uuid) forced = a; });
+    }
+    var rest = items.filter(function (a) { return first.indexOf(a) < 0 && a !== forced; });
+    function opt(a, label) {
+      return '<option value="' + escapeHtml(a.uuid) + '"' + (a.uuid === selected ? ' selected' : '') + '>' +
+        escapeHtml(label) + '</option>';
+    }
+    function walletLabel(a) { return a.iso_code ? a.name + ' · ' + a.iso_code : a.name; }
+    return '<option value=""' + (selected ? '' : ' selected') + '>' + escapeHtml(placeholder) + '</option>' +
+      first.map(function (a) { return opt(a, walletLabel(a)); }).join('') +
+      (forced ? opt(forced, forced.name + ' — всё равно в «' + forced.name + '»') : '') +
+      rest.map(function (a) { return opt(a, walletLabel(a)); }).join('');
+  }
+
+  function aiCardHtml(card) {
+    if (!aiAccounts) return '<section class="report-section ai-card"><p class="sub">Загрузка кошельков…</p></section>';
+    var wallet = aiFindWallet(card.walletUuid);
+    var walletLabel = card.walletAsk && !card.walletUuid ? 'С какого кошелька?' : 'Кошелёк';
+    var categoryLabel = card.categoryAsk && !card.categoryUuid ? 'Какая категория?' : 'Категория';
+    return (
+      '<section class="report-section ai-card" id="ai-card">' +
+      '<p class="ai-card-lead">' + (card.fromDraft ? 'Понял из текста — проверьте перед записью:' : 'Заполните трату:') + '</p>' +
+      '<div class="ai-card-grid">' +
+      '<label class="ai-field">Сумма<span class="ai-amount-row">' +
+      '<input type="text" inputmode="decimal" id="ai-amount" autocomplete="off" value="' + escapeHtml(card.amount) + '">' +
+      '<span class="ai-currency" id="ai-currency">' + escapeHtml(wallet ? wallet.iso_code : '—') + '</span>' +
+      '</span></label>' +
+      '<label class="ai-field"><span id="ai-wallet-label">' + walletLabel + '</span>' +
+      '<select id="ai-wallet">' +
+      aiOptionsHtml(aiAccounts.wallets, card.walletUuid, card.walletFirst, card.walletForce, 'Выберите кошелёк') +
+      '</select>' +
+      (card.walletHint ? '<span class="ai-field-hint">' + escapeHtml(card.walletHint) + '</span>' : '') +
+      '</label>' +
+      '<label class="ai-field"><span id="ai-category-label">' + categoryLabel + '</span>' +
+      '<select id="ai-category">' +
+      aiOptionsHtml(aiAccounts.categories, card.categoryUuid, card.categoryFirst, null, 'Выберите категорию') +
+      '</select></label>' +
+      '<label class="ai-field">Дата и время<span class="ai-datetime-row">' +
+      '<input type="date" id="ai-date" value="' + escapeHtml(card.date) + '">' +
+      '<input type="time" id="ai-time" step="1" value="' + escapeHtml(card.time) + '">' +
+      '</span></label>' +
+      '<label class="ai-field ai-field-wide">Комментарий' +
+      '<input type="text" id="ai-comment" value="' + escapeHtml(card.comment) + '"></label>' +
+      '</div>' +
+      (card.notes.length ? '<ul class="ai-notes">' + card.notes.map(function (n) {
+        return '<li>' + escapeHtml(n) + '</li>';
+      }).join('') + '</ul>' : '') +
+      (card.sourceText ? '<p class="ai-source">Исходный текст: «' + escapeHtml(card.sourceText) + '»</p>' : '') +
+      '<p class="err ai-card-error" id="ai-card-error"' + (card.error ? '' : ' hidden') + '>' + escapeHtml(card.error) + '</p>' +
+      '<div class="ai-card-actions">' +
+      '<button type="button" class="btn" id="ai-save-btn">' + (card.busy ? 'Записываю…' : 'Записать') + '</button>' +
+      '<button type="button" class="btn btn-secondary" id="ai-card-cancel-btn">Отмена</button>' +
+      '</div>' +
+      '</section>'
+    );
+  }
+
+  function renderAiRoot() {
+    var root = document.getElementById('ai-root');
+    if (!root) return;
+    var parsing = aiPhase === 'parsing';
+    var status = '';
+    if (parsing) {
+      status = '<div class="ai-status"><span class="ai-spinner" aria-hidden="true"></span>Разбираю…' +
+        '<button type="button" class="btn btn-secondary" id="ai-cancel-btn">Отменить</button></div>';
+    } else if (aiPhase === 'input' && aiFailure) {
+      status = '<div class="ai-status ai-status-fail"><span>' + escapeHtml(aiFailure.message) + '</span>' +
+        '<button type="button" class="btn btn-secondary" id="ai-manual-btn">Заполнить вручную</button></div>';
+    } else if (aiPhase === 'input' && aiDoneLine) {
+      status = '<div class="ai-status ai-status-done">' + aiDoneLine + '</div>';
+    }
+    root.innerHTML =
+      '<section class="report-section ai-input">' +
+      '<h2>Трата своими словами</h2>' +
+      '<textarea id="ai-text" rows="3" placeholder="Например: вчера такси 450 с тинькоффа"' +
+      (parsing || aiPhase === 'card' ? ' disabled' : '') + '>' + escapeHtml(aiText) + '</textarea>' +
+      '<div class="ai-input-row">' +
+      '<span class="ai-counter" id="ai-counter"></span>' +
+      (aiPhase === 'card' ? '' : '<button type="button" class="btn" id="ai-parse-btn">Разобрать</button>') +
+      '</div>' +
+      status +
+      '</section>' +
+      (aiPhase === 'card' && aiCard ? aiCardHtml(aiCard) : '');
+    wireAiRoot();
+    aiUpdateInputState();
+    if (aiPhase === 'card' && aiCard) aiUpdateCardState();
+  }
+
+  function aiUpdateInputState() {
+    var len = aiText.length;
+    var counter = document.getElementById('ai-counter');
+    if (counter) {
+      counter.textContent = len + ' / ' + AI_TEXT_MAX;
+      counter.classList.toggle('over', len > AI_TEXT_MAX);
+    }
+    var btn = document.getElementById('ai-parse-btn');
+    if (btn) btn.disabled = aiPhase !== 'input' || !aiText.trim() || len > AI_TEXT_MAX;
+  }
+
+  // Подсветка полей и доступность "Записать" — на каждое изменение, без
+  // перерисовки карточки (иначе ввод терял бы фокус на каждом символе).
+  function aiUpdateCardState() {
+    if (!aiCard || !aiAccounts) return;
+    var p = aiCardProblems(aiCard);
+    var amountEl = document.getElementById('ai-amount');
+    if (!amountEl) return;
+    amountEl.classList.toggle('invalid', p.amount && aiCard.amount !== '');
+    document.getElementById('ai-date').classList.toggle('invalid', p.date);
+    document.getElementById('ai-time').classList.toggle('invalid', p.date);
+    var wallet = aiFindWallet(aiCard.walletUuid);
+    document.getElementById('ai-currency').textContent = wallet ? wallet.iso_code : '—';
+    document.getElementById('ai-wallet-label').textContent =
+      aiCard.walletAsk && !aiCard.walletUuid ? 'С какого кошелька?' : 'Кошелёк';
+    document.getElementById('ai-category-label').textContent =
+      aiCard.categoryAsk && !aiCard.categoryUuid ? 'Какая категория?' : 'Категория';
+    document.getElementById('ai-save-btn').disabled = aiCard.busy || p.amount || p.date || p.missing;
+    var errEl = document.getElementById('ai-card-error');
+    errEl.textContent = aiCard.error;
+    errEl.hidden = !aiCard.error;
+  }
+
+  function wireAiRoot() {
+    var textEl = document.getElementById('ai-text');
+    textEl.addEventListener('input', function () {
+      aiText = textEl.value;
+      aiUpdateInputState();
+    });
+    // Enter — разобрать, Shift+Enter — перенос строки.
+    textEl.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+        ev.preventDefault();
+        aiStartParse();
+      }
+    });
+    var parseBtn = document.getElementById('ai-parse-btn');
+    if (parseBtn) parseBtn.addEventListener('click', aiStartParse);
+    var cancelBtn = document.getElementById('ai-cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        aiCancelParsing();
+        renderAiRoot();
+      });
+    }
+    var manualBtn = document.getElementById('ai-manual-btn');
+    if (manualBtn) manualBtn.addEventListener('click', aiOpenManual);
+    if (aiPhase === 'card' && aiCard && aiAccounts) wireAiCard();
+  }
+
+  function wireAiCard() {
+    function bind(id, field, event) {
+      var el = document.getElementById(id);
+      el.addEventListener(event, function () {
+        aiCard[field] = el.value;
+        aiCard.error = '';
+        aiUpdateCardState();
+      });
+    }
+    bind('ai-amount', 'amount', 'input');
+    bind('ai-wallet', 'walletUuid', 'change');
+    bind('ai-category', 'categoryUuid', 'change');
+    bind('ai-date', 'date', 'input');
+    bind('ai-time', 'time', 'input');
+    bind('ai-comment', 'comment', 'input');
+    document.getElementById('ai-save-btn').addEventListener('click', function () { aiPush(false); });
+    document.getElementById('ai-card-cancel-btn').addEventListener('click', function () {
+      aiCard = null;
+      aiPhase = 'input';
+      renderAiRoot();
+    });
+  }
+
+  function aiFail(message) {
+    aiPhase = 'input';
+    aiFailure = { message: message };
+    aiJobId = null;
+    renderAiRoot();
+  }
+
+  var AI_REJECT_TEXT = {
+    amount_not_in_text: 'суммы нет в тексте',
+    future_date: 'дата в будущем',
+    too_old: 'дата старше года',
+  };
+
+  function aiStartParse() {
+    var text = aiText.trim();
+    if (aiPhase !== 'input' || !text || aiText.length > AI_TEXT_MAX) return;
+    aiAttempt++;
+    var attempt = aiAttempt;
+    aiPhase = 'parsing';
+    aiFailure = null;
+    aiDoneLine = '';
+    aiCard = null;
+    aiJobId = null;
+    renderAiRoot();
+
+    var now = new Date();
+    var input = { text: text, now: { date: isoDate(now), time: localTime(now) } };
+    var lastWallet = getAiLastWallet();
+    if (lastWallet) input.default_wallet_uuid = lastWallet;
+    // Загружаем списки параллельно с разбором — к карточке они уже будут.
+    aiLoadAccounts(false).catch(function () { /* покажем ошибку уже на карточке */ });
+
+    apiFetch('/api/ai/jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'parse_expense', idempotency_key: 'web:' + uuidV4(), input: input }),
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          renderLogin();
+          return null;
+        }
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (res.status === 202) return data;
+          var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          err.status = res.status;
+          throw err;
+        });
+      })
+      .then(function (data) {
+        if (!data) return;
+        if (!aiAttemptAlive(attempt)) {
+          // Отменили, пока задание создавалось, — снимаем и его.
+          if (data.job_id) aiDeleteJob(data.job_id);
+          return;
+        }
+        aiJobId = data.job_id;
+        aiPoll(attempt, data.job_id);
+      })
+      .catch(function (err) {
+        if (!aiAttemptAlive(attempt)) return;
+        if (err.status === 429) aiFail('ИИ занят, попробуйте через минуту');
+        else if (err.status === 503) aiFail('ИИ сейчас выключен');
+        else aiFail('Не удалось отправить текст ИИ: ' + err.message);
+      });
+  }
+
+  // Long-poll: ?wait=25 (до 30 с таймаута гейтвея), пока задание queued/running.
+  function aiPoll(attempt, jobId) {
+    apiFetch('/api/ai/jobs/' + encodeURIComponent(jobId) + '?wait=25', { credentials: 'include' })
+      .then(function (res) {
+        if (!aiAttemptAlive(attempt)) {
+          if (!document.getElementById('ai-root')) aiDeleteJob(jobId); // "Отчёты" закрыли посреди разбора
+          return null;
+        }
+        if (res.status === 401) {
+          renderLogin();
+          return null;
+        }
+        if (res.status === 404) {
+          aiFail('Результат потерялся, попробуйте ещё раз');
+          return null;
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (job) {
+        if (!job || !aiAttemptAlive(attempt)) return;
+        if (job.status === 'queued' || job.status === 'running') {
+          aiPoll(attempt, jobId);
+          return;
+        }
+        aiJobId = null;
+        if (job.status === 'failed') {
+          aiFail('ИИ не ответил вовремя');
+          return;
+        }
+        if (job.status !== 'done' || !job.result) {
+          aiFail('Разбор прерван, попробуйте ещё раз');
+          return;
+        }
+        aiHandleResult(job.result);
+      })
+      .catch(function (err) {
+        if (!aiAttemptAlive(attempt)) return;
+        aiFail('Не удалось получить ответ ИИ: ' + err.message);
+      });
+  }
+
+  function aiHandleResult(result) {
+    if (result.outcome === 'draft') {
+      aiCard = aiCardFromDraft(result, aiText.trim());
+      aiCard.fromDraft = true;
+      aiPhase = 'card';
+      aiShowCard();
+      return;
+    }
+    if (result.outcome === 'not_expense') {
+      aiFail('Не нашёл тут трату');
+      return;
+    }
+    var reasons = [];
+    (result.reasons || []).forEach(function (r) {
+      var t = AI_REJECT_TEXT[r] || 'сумма или дата';
+      if (reasons.indexOf(t) < 0) reasons.push(t);
+    });
+    aiFail('Не получилось разобрать: ' + (reasons.length ? reasons.join(', ') : 'сумма или дата'));
+  }
+
+  // Карточка рисуется сразу, а списки догружаются (обычно они уже в кэше).
+  function aiShowCard() {
+    renderAiRoot();
+    aiLoadAccounts(false)
+      .then(function (accounts) {
+        if (!accounts || aiPhase !== 'card') return;
+        // Предвыбор resolver, которого нет в живых списках (архивный счёт),
+        // не оставляем выбранным "в никуда".
+        if (aiCard.walletUuid && !aiFindWallet(aiCard.walletUuid)) aiCard.walletUuid = '';
+        if (aiCard.categoryUuid && !aiFindCategory(aiCard.categoryUuid)) aiCard.categoryUuid = '';
+        renderAiRoot();
+      })
+      .catch(function (err) {
+        var root = document.getElementById('ai-card');
+        if (root) root.innerHTML = reportsErrorHtml('Не удалось загрузить кошельки: ' + err.message);
+      });
+  }
+
+  function aiOpenManual() {
+    aiCard = aiNewCard(aiText.trim());
+    aiCard.fromDraft = false;
+    aiFailure = null;
+    aiPhase = 'card';
+    aiShowCard();
+  }
+
+  function aiDeleteJob(jobId) {
+    apiFetch('/api/ai/jobs/' + encodeURIComponent(jobId), { method: 'DELETE', credentials: 'include' })
+      .catch(function () { /* не снялось — задание само истечёт через TTL */ });
+  }
+
+  // "Отменить", уход с вкладки "ИИ" и новый заход на "Отчёты": текущая
+  // попытка устаревает, задание снимается, текст остаётся в поле.
+  function aiCancelParsing() {
+    if (aiPhase !== 'parsing') return;
+    aiAttempt++;
+    aiPhase = 'input';
+    if (aiJobId) aiDeleteJob(aiJobId);
+    aiJobId = null;
+  }
+
+  var AI_PUSH_ERROR_TEXT = {
+    reader_cannot_write: 'Вы читатель в этом кошельке — записывать траты нельзя',
+    missing_reference: 'Кошелёк или категория удалены — выберите другие',
+  };
+
+  // POST /sync/push — одна операция расхода: acc_fr — кошелёк, acc_to —
+  // категория. retriedDevice — уже был один повтор после device_required
+  // (сессия, выпущенная до выдачи браузеру device_id: /auth/refresh даёт
+  // токен с ним).
+  function aiPush(retriedDevice) {
+    var card = aiCard;
+    if (!card || card.busy) return;
+    var p = aiCardProblems(card);
+    if (p.amount || p.date || p.missing) return;
+    var wallet = aiFindWallet(card.walletUuid);
+    var category = aiFindCategory(card.categoryUuid);
+    var amount = card.amount.trim().replace(',', '.');
+    var time = card.time.length === 5 ? card.time + ':00' : card.time;
+    card.busy = true;
+    card.error = '';
+    var saveBtn = document.getElementById('ai-save-btn');
+    if (saveBtn) saveBtn.textContent = 'Записываю…';
+    aiUpdateCardState();
+
+    function finish(error) {
+      card.busy = false;
+      card.error = error;
+      if (aiCard !== card) return;
+      var btn = document.getElementById('ai-save-btn');
+      if (btn) btn.textContent = 'Записать';
+      aiUpdateCardState();
+    }
+
+    apiFetch('/sync/push', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batch_id: card.batchId,
+        device_name: 'Веб-браузер',
+        changes: {
+          operation: [{
+            uuid: card.opUuid,
+            date: card.date + ' ' + time,
+            acc_fr_uuid: wallet.uuid,
+            acc_to_uuid: category.uuid,
+            amount: amount,
+            comment: card.comment,
+          }],
+        },
+      }),
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          renderLogin();
+          return;
+        }
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          var code = data && data.error ? data.error : '';
+          if (res.ok) {
+            setAiLastWallet(wallet.uuid);
+            aiDoneLine = 'Записано: ' + fmtNative(amount, wallet.symbol || wallet.iso_code) + ' · ' +
+              escapeHtml(category.name) + ' · ' + escapeHtml(wallet.name);
+            aiCard = null;
+            aiText = '';
+            aiPhase = 'input';
+            renderAiRoot();
+            // Новая трата должна появиться в отчётах без F5 — как при смене периода.
+            reportsCache = {};
+            refreshPeriod();
+            return;
+          }
+          if (res.status === 403 && code === 'device_required') {
+            if (retriedDevice) {
+              finish('Перезайдите, чтобы записывать траты из браузера');
+              return;
+            }
+            return fetch('/auth/refresh', { method: 'POST', credentials: 'include' }).then(function () {
+              card.busy = false;
+              aiPush(true);
+            });
+          }
+          if (res.status === 409 && code === 'missing_reference') {
+            finish(AI_PUSH_ERROR_TEXT.missing_reference);
+            aiLoadAccounts(true).then(function () {
+              if (aiCard !== card) return;
+              if (!aiFindWallet(card.walletUuid)) card.walletUuid = '';
+              if (!aiFindCategory(card.categoryUuid)) card.categoryUuid = '';
+              renderAiRoot();
+            });
+            return;
+          }
+          if (res.status >= 500) {
+            finish('Не удалось записать, попробуйте ещё раз');
+            return;
+          }
+          finish(AI_PUSH_ERROR_TEXT[code] || code || 'HTTP ' + res.status);
+        });
+      })
+      .catch(function () {
+        finish('Не удалось записать, попробуйте ещё раз');
+      });
+  }
+
   // Сайдбар-навигация "Отчётов" — группы/пункты взяты из VIEWS в
   // Design/.../Отчёты - веб (офлайн).html (11 пунктов в 4 группах: Обзор ·
   // Куда уходит · Когда · Насколько изменилось — плюс пятая, "Кошелёк", ниже).
@@ -5716,6 +6415,8 @@
         ['acc', 'Доступ и приглашения', true],
         ['icons', 'Иконки', true],
     ] },
+    // id — группа скрыта, пока не ответил GET /api/ai/status (см. refreshAiStatus).
+    { group: 'ИИ', id: 'nav-group-ai', items: [['ai', 'ИИ', true]] },
   ];
 
   // Экраны, реально построенные в разметке renderReports() (см. ниже) —
@@ -5723,7 +6424,7 @@
   // parseReportsHash (что можно восстановить из hash при F5). Раньше это
   // был буквальный литерал в обоих местах — вынесен один раз, чтобы
   // добавление вкладки не значило править два места по отдельности.
-  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cur', 'acc', 'icons'];
+  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cur', 'acc', 'icons', 'ai'];
 
   // Нижняя панель вкладок мобильной раскладки (по прямому запросу — "меню
   // неудобное: открыл — занимает много места, надо прятать ещё одним нажатием").
@@ -5756,7 +6457,7 @@
   // Вкладки, не зависящие ни от периода, ни от валюты эквивалента (см.
   // refreshCurrencyPairs/refreshAccess/refreshIcons — зовутся вне
   // refreshPeriod) — на них фильтр в шапке скрыт (switchReportsView).
-  var PERIOD_FREE_VIEWS = ['cur', 'acc', 'icons'];
+  var PERIOD_FREE_VIEWS = ['cur', 'acc', 'icons', 'ai'];
 
   // Заголовок/подзаголовок каждого пункта — то же TITLES из дизайна, но
   // текстом только у реализованных: у отключённых пунктов заголовок никогда
@@ -5771,6 +6472,7 @@
     cur: ['Курсы валют', 'Валютные пары и история их курса — добавление, изменение и удаление вручную'],
     acc: ['Доступ и приглашения', 'Кто видит этот кошелёк и как пригласить ещё одного человека'],
     icons: ['Иконки', 'Все иконки, доступные этому кошельку: общий набор и добавленные вами'],
+    ai: ['ИИ', 'Трата своими словами — проверьте и запишите'],
   };
 
   // Текущий пункт навигации — модульная переменная (тот же приём, что и
@@ -5949,7 +6651,8 @@
     return REPORTS_NAV.map(function (g) {
       var label = g.group ? '<div class="nav-group-label">' + escapeHtml(g.group) + '</div>' : '';
       var items = g.items.map(function (it) { return reportsNavItemHtml(it[0], it[1], it[2]); }).join('');
-      return '<div class="nav-group">' + label + items + '</div>';
+      var idAttr = g.id ? ' id="' + g.id + '" hidden' : '';
+      return '<div class="nav-group"' + idAttr + '>' + label + items + '</div>';
     }).join('');
   }
 
@@ -5958,6 +6661,20 @@
   // "Отчётов" (см. refreshPeriod() внизу renderReports()), здесь только
   // видимость и заголовок/активный пункт меню.
   function switchReportsView(view) {
+    // "ИИ" скрыт (или статус ещё не пришёл) — прямая ссылка, F5 и
+    // "Назад"/"Вперёд" на него открывают "Обзор". Пока статуса нет, просьбу
+    // запоминаем: refreshAiStatus переключит, если ИИ окажется включён.
+    if (view === 'ai' && aiStatus !== true) {
+      aiRestorePending = aiStatus === null;
+      view = 'over';
+    } else if (view !== 'over') {
+      aiRestorePending = false; // пользователь ушёл сам — не перебивать его выбор
+    }
+    // Ушли с "ИИ" посреди разбора — задание снимается, текст остаётся в поле.
+    if (reportsView === 'ai' && view !== 'ai' && aiPhase === 'parsing') {
+      aiCancelParsing();
+      renderAiRoot();
+    }
     reportsView = view;
     REPORTS_BUILT_VIEWS.forEach(function (v) {
       document.getElementById('view-' + v).hidden = v !== view;
@@ -6203,6 +6920,7 @@
     accessSnapshot = null;
     accessJustCreated = null;
     accessCopiedId = null;
+    resetAi(); // незавершённый разбор прошлого захода снимается, карточка не переживает ухода
     // Сохранённое состояние — сразу в разметке, а не toggle-ом после вставки:
     // иначе при каждом заходе на "Отчёты" было бы видно, как свёрнутый
     // сайдбар на мгновение разворачивается и тут же сворачивается обратно
@@ -6433,6 +7151,9 @@
       '<div id="view-icons" hidden>' +
       '<div id="icons-root"><p class="sub">Загрузка…</p></div>' +
       '</div>' +
+      '<div id="view-ai" hidden>' +
+      '<div id="ai-root"></div>' +
+      '</div>' +
       '</div>' +
       '</main>' +
       mobileTabbarHtml() +
@@ -6579,6 +7300,8 @@
     telegramJustLinked = false; // «Готово — подключён» — только сразу после подключения
     refreshTelegram();
     refreshIcons();
+    renderAiRoot();
+    refreshAiStatus();
     updateOpsSidebarStickyOffset();
     wireOpsSidebarStickyResize();
   }

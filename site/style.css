@@ -299,6 +299,7 @@ tr.device-current { background: var(--sand2); }
 .brand-title { font-family: var(--font-display); font-size: 22px; color: var(--ink); margin-top: 2px; }
 .reports-nav { flex: 1; padding: 4px 12px; display: flex; flex-direction: column; gap: 16px; }
 .nav-group { display: flex; flex-direction: column; gap: 3px; }
+.nav-group[hidden] { display: none; } /* группа «ИИ» до ответа /api/ai/status — display:flex выше перебил бы атрибут */
 .nav-group-label {
   padding: 6px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
   color: var(--ink5);
@@ -1154,3 +1155,64 @@ tr.device-current { background: var(--sand2); }
    мобильного блока выше, чтобы перебить его .filters-open .reports-controls. */
 .reports-header.no-period .period-summary-btn,
 .reports-header.no-period .reports-controls { display: none; }
+
+/* «ИИ» → «Трата своими словами» (app.js::renderAiRoot, add-ai-expense-text):
+   поле ввода, строка статуса разбора и карточка черновика. Поля — те же
+   пилюли на --bg, что у .cur-add-form; карточка — поверхность, как
+   .access-card. Две колонки полей, на узком экране (≤700px) — одна,
+   кнопки внизу карточки во всю ширину. */
+.ai-input textarea {
+  width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; padding: 12px 16px;
+  border: 1.5px solid var(--l14); border-radius: 18px; background: var(--surf); color: var(--ink);
+  font-family: inherit; font-size: 15px; line-height: 1.45; outline: none;
+}
+.ai-input textarea:focus { border-color: var(--acc); }
+.ai-input textarea:disabled { color: var(--ink4); background: var(--sand2); }
+.ai-input-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.ai-input-row .btn { margin: 0; }
+.ai-input-row .btn:disabled, .ai-card-actions .btn:disabled { opacity: .45; cursor: default; }
+.ai-input-row .btn:disabled:hover, .ai-card-actions .btn:not(.btn-secondary):disabled:hover { background: var(--acc); }
+.ai-counter { font-size: 12.5px; color: var(--ink5); font-variant-numeric: tabular-nums; }
+.ai-counter.over { color: var(--exp); font-weight: 700; }
+
+.ai-status {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; padding: 12px 16px;
+  border-radius: 14px; background: var(--sand2); color: var(--ink2); font-size: 14px;
+}
+.ai-status .btn { margin: 0 0 0 auto; padding: 7px 16px; }
+.ai-status-fail { background: var(--exp-tint); color: var(--exp); }
+.ai-status-done { background: var(--inc-tint); color: var(--inc); font-weight: 600; }
+.ai-spinner {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--l14); border-top-color: var(--acc);
+  animation: ai-spin .8s linear infinite;
+}
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
+.ai-card { background: var(--surf); border-radius: 18px; padding: 18px 20px; box-shadow: var(--sh); }
+.ai-card-lead { margin: 0 0 14px; font-size: 14px; font-weight: 600; color: var(--ink2); }
+.ai-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+.ai-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; font-weight: 600; color: var(--ink4); }
+.ai-field-wide { grid-column: 1 / -1; }
+.ai-field input, .ai-field select {
+  height: 40px; box-sizing: border-box; width: 100%; min-width: 0; padding: 0 14px; border-radius: 999px;
+  border: 1.5px solid var(--l14); background: var(--bg); color: var(--ink); font-family: inherit; font-size: 14px; outline: none;
+}
+.ai-field input:focus, .ai-field select:focus { border-color: var(--acc); }
+.ai-field input.invalid { border-color: var(--exp); background: var(--exp-tint); }
+.ai-field-hint { font-weight: 500; color: var(--exp); font-size: 12px; line-height: 1.35; }
+.ai-amount-row, .ai-datetime-row { display: flex; gap: 8px; align-items: center; }
+.ai-currency { flex: none; min-width: 36px; font-size: 13px; font-weight: 700; color: var(--ink3); }
+.ai-notes { margin: 12px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--ink3); }
+.ai-source { margin: 10px 0 0; font-size: 12.5px; color: var(--ink4); overflow-wrap: anywhere; }
+.ai-card-error { margin: 12px 0 0; font-size: 14px; }
+.ai-card-actions { display: flex; gap: 10px; margin-top: 16px; }
+.ai-card-actions .btn { margin: 0; }
+
+@media (max-width: 700px) {
+  .ai-card { padding: 16px; }
+  .ai-card-grid { grid-template-columns: 1fr; }
+  .ai-datetime-row { flex-direction: column; align-items: stretch; } /* время с секундами и AM/PM рядом с датой не влезает */
+  .ai-field input, .ai-field select, .ai-input textarea { font-size: 16px; } /* 16px — иначе iOS зумит при фокусе */
+  .ai-card-actions .btn { flex: 1; justify-content: center; text-align: center; }
+  .ai-status .btn { margin-left: 0; }
+}
