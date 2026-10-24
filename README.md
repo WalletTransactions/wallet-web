@@ -1205,3 +1205,16 @@ CDN-ссылка — работает и без доступа наружу (LAN
 API-вызовы в `app.js` — относительные пути, резолвятся туда, куда их
 направит гейтвей, см. выше). Единственное, что можно поменять — порт,
 см. "Запуск" выше.
+
+## Версия
+
+Файл `VERSION` (semver) и `GET /version` — та же тройка
+`service`/`version`/`git_commit`, что у C++-сервисов ([README google-auth, «Версия»](https://github.com/WalletTransactions/google-auth#версия)).
+JSON собирается при сборке образа (`Containerfile`: версия из `VERSION`,
+хэш — `--build-arg GIT_COMMIT`), отдаёт его `location = /version` в
+`nginx.conf`. Снаружи `/version` отвечает гейтвей сам, сюда ходит только
+smoke выката изнутри сети контура.
+
+Релиз — git-тегами: `vX.Y.Z-rc.N` публикует образ в ghcr и выкатывает его
+в test, `vX.Y.Z` на том же коммите — тот же образ в prod; `X.Y.Z` должен
+совпадать с `VERSION`. Подробно — [README google-auth, «Версия»](https://github.com/WalletTransactions/google-auth#версия), «Релиз».
