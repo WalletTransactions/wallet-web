@@ -12,6 +12,13 @@ on:
   pull_request:
     paths-ignore: ["**.md"]
   workflow_dispatch:
+  # release.yml вызывает отсюда юнит-тесты перед публикацией rc-образа;
+  # сам образ он собирает и публикует сам, поэтому skip-image.
+  workflow_call:
+    inputs:
+      skip-image:
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,6 +27,7 @@ concurrency:
 jobs:
   docker-image:
     name: Docker image
+    if: ${{ !inputs.skip-image }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -28,7 +36,17 @@ jobs:
       # Только проверка, что образ собирается; никуда не публикуется.
       - name: Build image
         run: |
-          docker build -f Containerfile -t wallet-web:ci .
+          docker build \
+              --build-arg GIT_COMMIT="$(git rev-parse --short=8 HEAD)" \
+              -f Containerfile -t wallet-web:ci .
 
       - name: Check nginx config
         run: docker run --rm wallet-web:ci nginx -t
+
+      - name: Check /version
+        run: |
+          docker run -d --name web-ci wallet-web:ci
+          sleep 2
+          docker exec web-ci wget -qO- http://127.0.0.1/version | tee version.json
+          grep -q "\"version\":\"$(tr -d '[:space:]' < VERSION)\"" version.json
+          docker rm -f web-ci
