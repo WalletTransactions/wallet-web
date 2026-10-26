@@ -13,7 +13,9 @@ info:
     ВСЕГДА через `wallet-gateway` (см. `wallet-gateway/openapi.yaml`),
     контракты этих вызовов описаны в `google-auth/openapi.yaml`,
     `wallet-api/openapi.yaml`, `wallet-report/openapi.yaml` и
-    `wallet-ai/openapi.yaml` (`/api/ai/*` — экран «ИИ»), не здесь.
+    `wallet-ai/openapi.yaml` (`/api/ai/*` — экран «ИИ»: `/api/ai/jobs*` —
+    трата своими словами, `/api/ai/imports*` и `/api/ai/statement-profiles*`
+    — импорт выписки), не здесь.
 
     **Этот файл лежит внутри `site/`, не рядом с README** (в отличие от
     остальных трёх сервисов проекта) — единственная копия физически там же,

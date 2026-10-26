@@ -5685,7 +5685,8 @@
 
   // --- «ИИ» (view 'ai', add-ai-expense-text) -------------------------------
   // Пункт виден только по ответу GET /api/ai/status (wallet-ai): enabled и
-  // parse_expense в features. Статус — один раз при открытии "Отчётов", вне
+  // в features есть parse_expense или statement_import; разделы экрана — по
+  // своим features (add-ai-statement-import). Статус — один раз при открытии "Отчётов", вне
   // refreshPeriod (как refreshCurrencyPairs): от периода он не зависит, а
   // остальные вкладки его не ждут. В режиме "Посмотреть как клиент" пункт
   // скрыт всегда — запись ушла бы в кошелёк администратора, не клиента.
@@ -5695,6 +5696,7 @@
   // пока показан "Обзор", а когда статус придёт включённым — переключаемся
   // на "ИИ", если пользователь за это время никуда не ушёл сам.
   var aiStatus = null;
+  var aiFeatures = []; // features из /api/ai/status, см. aiHas
   var aiRestorePending = false;
 
   function setAiNavVisible(visible) {
@@ -5704,6 +5706,7 @@
 
   function refreshAiStatus() {
     aiStatus = null;
+    aiFeatures = [];
     aiRestorePending = false; // просьбу восстановить "ИИ" ставит уже следующий switchReportsView (F5/popstate)
     setAiNavVisible(false);
     if (viewAsUser) {
@@ -5716,13 +5719,17 @@
         return res.json();
       })
       .then(function (data) {
-        return !!(data && data.enabled === true && Array.isArray(data.features) &&
-          data.features.indexOf('parse_expense') >= 0);
-      }, function () { return false; })
-      .then(function (enabled) {
+        if (!data || data.enabled !== true || !Array.isArray(data.features)) return [];
+        return data.features.filter(function (f) { return f === 'parse_expense' || f === 'statement_import'; });
+      }, function () { return []; })
+      .then(function (features) {
         if (!document.getElementById('nav-group-ai')) return; // "Отчёты" уже закрыты
+        var enabled = features.length > 0;
         aiStatus = enabled;
+        aiFeatures = features;
         setAiNavVisible(enabled);
+        renderAiRoot();
+        stOnStatus();
         if (enabled && aiRestorePending && reportsView === 'over') {
           isApplyingHistoryState = true;
           switchReportsView('ai');
@@ -5806,6 +5813,7 @@
     aiDoneLine = '';
     aiCard = null;
     aiAccounts = null;
+    stReset();
   }
 
   // Кошельки и категории для карточки — тот же /api/reports/accounts, что у
@@ -5996,6 +6004,12 @@
   function renderAiRoot() {
     var root = document.getElementById('ai-root');
     if (!root) return;
+    // Раздел — только если wallet-ai объявил parse_expense (без базы ai
+    // бывает и наоборот: только импорт, см. aiHas).
+    if (!aiHas('parse_expense')) {
+      root.innerHTML = '';
+      return;
+    }
     var parsing = aiPhase === 'parsing';
     var status = '';
     if (parsing) {
@@ -6382,6 +6396,1482 @@
       });
   }
 
+  // --- «ИИ» → «Импорт выписки» (add-ai-statement-import) -------------------
+  // Выписка (текст или файл) → импорт в wallet-ai, разбор идёт в фоне и не
+  // требует открытой вкладки. Готовый импорт проверяется на экране
+  // #/reports/ai/import/<id>: группы строк, правки (автосохранение PATCH rows),
+  // запись готовых операций в POST /sync/push пачками по 50 с отметкой
+  // /committed после каждой. ИИ сам ничего не пишет.
+  //
+  // Список опрашивается (D2): раз в 5 с, пока раздел открыт и есть
+  // незавершённые импорты, иначе раз в 30 с — ради метки на пункте «ИИ».
+  // Таймер останавливается, когда незавершённых нет.
+  var ST_FILE_MAX = 5 * 1024 * 1024;
+  var ST_FILE_EXT = ['pdf', 'csv', 'txt'];
+  var ST_SEEN_KEY = 'aiSeenImports';
+  var ST_PROFILE_KEY = 'aiImportProfile';
+  var ST_WALLET_KEY = 'aiImportWalletUuid';
+  var ST_PAGE = 200;
+  var ST_PUSH_BATCH = 50;
+  var ST_ACTIVE = ['queued', 'extracting', 'classifying'];
+  var ST_GROUPS = [
+    ['ready', 'Готово к записи'],
+    ['needs_category', 'Нужна категория'],
+    ['possible_duplicate', 'Похоже на дубль'],
+    ['check', 'Проверьте'],
+    ['exists', 'Уже есть'],
+    ['imported', 'Уже импортировано'],
+    ['income_transfer', 'Доходы и переводы'],
+    ['unparsed', 'Не разобрано'],
+  ];
+  var ST_FAILURE_TEXT = {
+    no_text: 'в PDF нет текста — похоже, это скан',
+    no_operations: 'не нашёл в документе ни одной операции',
+    timeout: 'ИИ не успел разобрать часть выписки',
+    unavailable: 'ИИ был недоступен слишком долго',
+  };
+  var ST_CHECK_TEXT = {
+    amount_not_in_text: 'сумма не найдена в тексте',
+    date_not_in_text: 'дата не найдена в тексте',
+    currency_mismatch: 'другая валюта',
+  };
+  var ST_SOURCE_TEXT = { rule: 'правило', llm: 'ИИ', user: 'вы', manual: 'вы' };
+  var ST_PATCH_ERROR = {
+    bad_amount: 'Сумма — положительное число, например 1290.50',
+    bad_date: 'Дата — не в будущем',
+    unknown_category: 'Такой категории больше нет — обновите страницу',
+    row_committed: 'Строка уже записана',
+    not_ready: 'Импорт ещё не готов',
+    bad_line: 'Этой строки в выписке нет',
+  };
+
+  var stImports = null; // [] из GET /api/ai/imports; null — ещё не загружен
+  var stListError = '';
+  var stListNotice = ''; // ответ на «Повторить» в списке
+  var stProfiles = null; // [] из GET /api/ai/statement-profiles
+  var stPollTimer = null;
+  var stForm = null; // см. stNewForm
+  var stConfirmDelete = null; // import_id, у которого открыто «Удалить?»
+  var stHighlight = null; // import_id, подсвеченный после 429 import_in_progress
+  var stRename = null; // {id, name} — открытое переименование своего формата
+  var stConfirmProfileDelete = null; // id своего формата под «Удалить?»
+  var stDetail = null; // экран проверки, см. stShowImport
+
+  function stGetPref(key) {
+    try {
+      return localStorage.getItem(key) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function stSetPref(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      // не запомнили — в следующий раз будет значение по умолчанию
+    }
+  }
+
+  // Какие готовые импорты уже открывали в этом браузере (D3) — сервер о
+  // «просмотрено» не знает.
+  function stSeen() {
+    try {
+      var v = JSON.parse(localStorage.getItem(ST_SEEN_KEY) || '[]');
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function stSaveSeen(list) {
+    try {
+      localStorage.setItem(ST_SEEN_KEY, JSON.stringify(list));
+    } catch (e) {
+      // метка вернётся после перезагрузки — не страшно
+    }
+  }
+
+  function stMarkSeen(id) {
+    var seen = stSeen();
+    if (seen.indexOf(id) >= 0) return;
+    seen.push(id);
+    stSaveSeen(seen);
+    stUpdateBadge();
+  }
+
+  function aiHas(feature) {
+    return aiStatus === true && aiFeatures.indexOf(feature) >= 0;
+  }
+
+  function stNewForm() {
+    return {
+      mode: 'text',
+      text: '',
+      file: null,
+      walletUuid: stGetPref(ST_WALLET_KEY),
+      profile: stGetPref(ST_PROFILE_KEY) || 'auto',
+      error: '',
+      busy: false,
+    };
+  }
+
+  function stReset() {
+    clearTimeout(stPollTimer);
+    stPollTimer = null;
+    if (stDetail) clearTimeout(stDetail.timer);
+    stImports = null;
+    stListError = '';
+    stListNotice = '';
+    stProfiles = null;
+    stForm = stNewForm();
+    stConfirmDelete = null;
+    stHighlight = null;
+    stRename = null;
+    stConfirmProfileDelete = null;
+    stDetail = null;
+  }
+
+  // JSON-вызов wallet-ai: 401 — экран входа (null), ошибка — Error со
+  // status и телом ответа (body.import_id у 429 import_in_progress).
+  function stApi(method, url, body) {
+    var options = { method: method, credentials: 'include' };
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': 'application/json' };
+      options.body = JSON.stringify(body);
+    }
+    return apiFetch(url, options).then(function (res) {
+      if (res.status === 401) {
+        renderLogin();
+        return null;
+      }
+      if (res.status === 204) return {};
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) {
+          var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          err.status = res.status;
+          err.body = data || {};
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function stImportUrl(id) {
+    return '/api/ai/imports/' + encodeURIComponent(id);
+  }
+
+  // Статус ИИ пришёл: раздел, список, профили и кошельки формы.
+  function stOnStatus() {
+    stRender();
+    if (!aiHas('statement_import')) return;
+    stLoadImports();
+    stLoadProfiles();
+    aiLoadAccounts(false).then(function () {
+      stRenderWalletOptions();
+      if (stDetail) stRenderDetail();
+      else stRenderList();
+    }, function () { /* без списка кошельков форма просто остаётся неактивной */ });
+  }
+
+  // Каркас раздела: форма, список и «Мои форматы» — в своих контейнерах,
+  // чтобы опрос списка не перерисовывал поле, в котором пользователь пишет.
+  function stRender() {
+    var root = document.getElementById('st-root');
+    if (!root) return;
+    var aiRoot = document.getElementById('ai-root');
+    if (aiRoot) aiRoot.hidden = !!stDetail;
+    if (!aiHas('statement_import')) {
+      root.innerHTML = '';
+      return;
+    }
+    if (stDetail) {
+      root.innerHTML = '<div id="st-detail"></div>';
+      stRenderDetail();
+      if (!stDetail.data && !stDetail.loading) stLoadDetail(false);
+      return;
+    }
+    root.innerHTML =
+      '<section class="report-section st-section">' +
+      '<h2>Импорт выписки</h2>' +
+      '<p class="sub st-lead">Выписка банка (PDF с текстом, CSV или скопированный текст) — ИИ разберёт её в фоне, ' +
+      'страницу можно закрыть. Потом проверьте операции и запишите их одним действием.</p>' +
+      '<div id="st-form"></div>' +
+      '<div id="st-list"></div>' +
+      '<div id="st-own"></div>' +
+      '</section>';
+    stRenderForm();
+    stRenderList();
+    stRenderOwn();
+    stWireSection(root);
+  }
+
+  // --- Форма загрузки ---
+
+  function stWalletOptionsHtml(selected) {
+    if (!aiAccounts) return '<option value="">Загрузка кошельков…</option>';
+    return '<option value="">Выберите кошелёк</option>' + aiAccounts.wallets.map(function (w) {
+      return '<option value="' + escapeHtml(w.uuid) + '"' + (w.uuid === selected ? ' selected' : '') + '>' +
+        escapeHtml(w.iso_code ? w.name + ' · ' + w.iso_code : w.name) + '</option>';
+    }).join('');
+  }
+
+  function stProfileOptionsHtml(selected) {
+    var list = stProfiles || [];
+    function opt(id, label) {
+      return '<option value="' + escapeHtml(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    }
+    var own = list.filter(function (p) { return p.kind === 'own'; });
+    return opt('auto', 'Определить автоматически') +
+      list.filter(function (p) { return p.kind === 'builtin'; }).map(function (p) { return opt(p.id, p.name); }).join('') +
+      (own.length ? '<optgroup label="Мои форматы">' + own.map(function (p) { return opt(p.id, p.name); }).join('') + '</optgroup>' : '') +
+      opt('none', 'Без подсказок');
+  }
+
+  // Выбор из прошлого раза, которого больше нет (кошелёк в архиве, свой
+  // формат удалён), не остаётся выбранным «в никуда».
+  function stNormalizeForm() {
+    var f = stForm;
+    if (aiAccounts && f.walletUuid && !aiFindWallet(f.walletUuid)) f.walletUuid = '';
+    if (stProfiles && f.profile !== 'auto' && f.profile !== 'none' &&
+        !stProfiles.some(function (p) { return p.id === f.profile; })) {
+      f.profile = 'auto';
+    }
+  }
+
+  function stCanSubmit() {
+    var f = stForm;
+    return !f.busy && !!aiFindWallet(f.walletUuid) && (f.mode === 'text' ? !!f.text.trim() : !!f.file);
+  }
+
+  function stFileSizeText(bytes) {
+    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' КБ';
+    return (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' МБ';
+  }
+
+  function stRenderForm() {
+    var el = document.getElementById('st-form');
+    if (!el) return;
+    stNormalizeForm();
+    var f = stForm;
+    var source = f.mode === 'text'
+      ? '<textarea id="st-text" rows="6" placeholder="Скопируйте сюда операции из выписки или приложения банка"' +
+        (f.busy ? ' disabled' : '') + '>' + escapeHtml(f.text) + '</textarea>'
+      : '<div class="st-file-row">' +
+        '<label class="btn-chip st-file-btn">Выбрать файл<input type="file" id="st-file" accept=".pdf,.csv,.txt" hidden' +
+        (f.busy ? ' disabled' : '') + '></label>' +
+        '<span class="st-file-name">' + (f.file ? escapeHtml(f.file.name) + ' · ' + stFileSizeText(f.file.size)
+          : 'PDF с текстом, CSV или TXT до 5 МБ') + '</span></div>';
+    el.innerHTML =
+      '<div class="st-form">' +
+      '<div class="st-form-grid">' +
+      '<label class="ai-field">Кошелёк<select id="st-wallet"' + (f.busy ? ' disabled' : '') + '>' +
+      stWalletOptionsHtml(f.walletUuid) + '</select></label>' +
+      '<label class="ai-field">Банк или формат<select id="st-profile"' + (f.busy ? ' disabled' : '') + '>' +
+      stProfileOptionsHtml(f.profile) + '</select></label>' +
+      '</div>' +
+      '<div class="ops-seg-group st-mode">' +
+      '<button type="button" class="ops-seg-btn' + (f.mode === 'text' ? ' active' : '') + '" data-st-mode="text">Вставить текст</button>' +
+      '<button type="button" class="ops-seg-btn' + (f.mode === 'file' ? ' active' : '') + '" data-st-mode="file">Загрузить файл</button>' +
+      '</div>' +
+      source +
+      '<p class="err st-form-error"' + (f.error ? '' : ' hidden') + ' id="st-form-error">' + escapeHtml(f.error) + '</p>' +
+      '<button type="button" class="btn st-submit" id="st-submit">' + (f.busy ? 'Отправляю…' : 'Разобрать выписку') + '</button>' +
+      '</div>';
+    stUpdateFormState();
+  }
+
+  function stUpdateFormState() {
+    var btn = document.getElementById('st-submit');
+    if (btn) btn.disabled = !stCanSubmit();
+  }
+
+  function stRenderWalletOptions() {
+    var sel = document.getElementById('st-wallet');
+    if (!sel || !stForm) return;
+    stNormalizeForm();
+    sel.innerHTML = stWalletOptionsHtml(stForm.walletUuid);
+    stUpdateFormState();
+  }
+
+  function stRenderProfileOptions() {
+    var sel = document.getElementById('st-profile');
+    if (!sel || !stForm) return;
+    stNormalizeForm();
+    sel.innerHTML = stProfileOptionsHtml(stForm.profile);
+  }
+
+  function stFileProblem(file) {
+    var dot = file.name.lastIndexOf('.');
+    var ext = dot < 0 ? '' : file.name.slice(dot + 1).toLowerCase();
+    if (ST_FILE_EXT.indexOf(ext) < 0) return 'Подходят только PDF, CSV и TXT';
+    if (file.size > ST_FILE_MAX) return 'Файл больше 5 МБ — выгрузите выписку за меньший период';
+    if (file.size === 0) return 'Файл пустой';
+    return '';
+  }
+
+  // FileReader → base64 без префикса data:…;base64, (D4).
+  function stReadBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var s = String(reader.result);
+        resolve(s.slice(s.indexOf(',') + 1));
+      };
+      reader.onerror = function () {
+        var err = new Error('file');
+        err.fileRead = true;
+        reject(err);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function stCreateErrorText(err) {
+    var code = err.body && err.body.error;
+    if (err.fileRead) return 'Не удалось прочитать файл — выберите его ещё раз';
+    if (err.status === 429 && code === 'import_in_progress') return 'Уже разбирается другая выписка — дождитесь её или отмените';
+    if (err.status === 429) return 'Сейчас разбирается много выписок — попробуйте через несколько минут';
+    if (err.status === 413 || code === 'too_large') return 'Выписка слишком большая — выгрузите её за меньший период, например по месяцам';
+    if (code === 'unsupported_file') return 'Такой файл не подходит — нужен PDF с текстом, CSV или TXT';
+    if (code === 'empty') return 'Выписка пустая — вставьте текст или выберите другой файл';
+    if (code === 'bad_base64') return 'Не удалось прочитать файл — выберите его ещё раз';
+    if (code === 'unknown_wallet') return 'Кошелёк не найден — выберите другой';
+    if (code === 'unknown_profile') return 'Такого формата больше нет — выбрано «Определить автоматически»';
+    if (err.status === 503) return 'Импорт выписок сейчас недоступен — попробуйте позже';
+    if (err.status === 502) return 'Не удалось проверить кошелёк — попробуйте ещё раз';
+    if (!err.status) return 'Не удалось отправить выписку — проверьте соединение';
+    return 'Не удалось отправить выписку: ' + (code || 'HTTP ' + err.status);
+  }
+
+  function stSubmit() {
+    var f = stForm;
+    if (!stCanSubmit()) return;
+    f.busy = true;
+    f.error = '';
+    stHighlight = null;
+    stRenderForm();
+    stRenderList();
+    var body = { wallet_uuid: f.walletUuid, profile: f.profile };
+    var prepared;
+    if (f.mode === 'text') {
+      body.text = f.text;
+      prepared = Promise.resolve();
+    } else {
+      prepared = stReadBase64(f.file).then(function (b64) {
+        body.file = { name: f.file.name, content_base64: b64 };
+      });
+    }
+    prepared
+      .then(function () { return stApi('POST', '/api/ai/imports', body); })
+      .then(function (data) {
+        if (!data || stForm !== f) return;
+        stSetPref(ST_WALLET_KEY, f.walletUuid);
+        stSetPref(ST_PROFILE_KEY, f.profile);
+        stForm = stNewForm();
+        stForm.mode = f.mode;
+        stRenderForm();
+        stLoadImports();
+      })
+      .catch(function (err) {
+        if (stForm !== f) return;
+        f.busy = false;
+        f.error = stCreateErrorText(err);
+        var code = err.body && err.body.error;
+        if (code === 'import_in_progress') stHighlight = err.body.import_id || null;
+        if (code === 'unknown_profile') {
+          f.profile = 'auto';
+          stLoadProfiles();
+        }
+        stRenderForm();
+        stRenderList();
+      });
+  }
+
+  // --- Список импортов ---
+
+  function stLoadImports() {
+    if (!aiHas('statement_import')) return;
+    clearTimeout(stPollTimer);
+    stPollTimer = null;
+    stApi('GET', '/api/ai/imports')
+      .then(function (data) {
+        if (!data || !document.getElementById('reports-shell')) return;
+        stImports = data.imports || [];
+        stListError = '';
+        // Забытые id (импорт удалён или истёк) из списка «просмотренных» убираем.
+        var ids = stImports.map(function (imp) { return imp.import_id; });
+        var seen = stSeen();
+        var kept = seen.filter(function (id) { return ids.indexOf(id) >= 0; });
+        if (kept.length !== seen.length) stSaveSeen(kept);
+      }, function (err) {
+        stListError = err.status === 503 ? 'Импорт выписок сейчас недоступен' : 'Не удалось загрузить импорты: ' + err.message;
+      })
+      .then(function () {
+        if (!document.getElementById('reports-shell')) return;
+        stUpdateBadge();
+        stRenderList();
+        stSchedulePoll();
+      });
+  }
+
+  function stSchedulePoll() {
+    clearTimeout(stPollTimer);
+    stPollTimer = null;
+    if (!document.getElementById('reports-shell') || !aiHas('statement_import') || !stImports) return;
+    var active = stImports.some(function (imp) { return ST_ACTIVE.indexOf(imp.status) >= 0; });
+    if (!active) return;
+    var inSection = reportsView === 'ai' && !stDetail;
+    stPollTimer = setTimeout(stLoadImports, inSection ? 5000 : 30000);
+  }
+
+  // Метка на «ИИ» (и «Ещё» на телефоне): готовые импорты, ещё не открытые здесь.
+  function stUpdateBadge() {
+    var n = 0;
+    if (aiHas('statement_import') && stImports) {
+      var seen = stSeen();
+      n = stImports.filter(function (imp) {
+        return imp.status === 'ready' && seen.indexOf(imp.import_id) < 0;
+      }).length;
+    }
+    [document.querySelector('.nav-item[data-view="ai"]'), document.getElementById('mobile-more-btn')].forEach(function (el) {
+      if (!el) return;
+      var badge = el.querySelector('.nav-badge');
+      if (!n) {
+        if (badge) el.removeChild(badge);
+        return;
+      }
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'nav-badge';
+        el.appendChild(badge);
+      }
+      badge.textContent = String(n);
+      badge.setAttribute('aria-label', 'Готовых выписок: ' + n);
+    });
+  }
+
+  function stProfileText(imp) {
+    if (imp.profile_detect === 'none') return 'Формат не определён — разобрано без подсказок';
+    if (imp.profile_detect === 'ambiguous') return 'Похоже на несколько форматов — разобрано без подсказок';
+    if (imp.profile && imp.profile.name) {
+      return 'Формат: ' + imp.profile.name + (imp.profile.source === 'auto' ? ' (определён автоматически)' : '');
+    }
+    return '';
+  }
+
+  function stStatusText(imp) {
+    var p = imp.progress || {};
+    var c = imp.counts || {};
+    var active = ST_ACTIVE.indexOf(imp.status) >= 0;
+    var s;
+    if (active && imp.paused_since) s = 'ИИ недоступен — разбор на паузе';
+    else if (imp.status === 'queued') s = 'в очереди';
+    else if (imp.status === 'extracting') s = p.total ? 'разбираю ' + p.done + ' из ' + p.total : 'разбираю';
+    else if (imp.status === 'classifying') s = 'подбираю категории';
+    else if (imp.status === 'ready') {
+      var rows = c.rows || 0;
+      s = 'готово: ' + rows + ' ' + pluralRu(rows, ['операция', 'операции', 'операций']);
+      if (c.committed) s += ' · записано ' + c.committed;
+    } else if (imp.status === 'done') s = 'записано ' + (c.committed || 0);
+    else if (imp.status === 'failed') s = 'ошибка: ' + (ST_FAILURE_TEXT[imp.failure] || 'разбор не удался');
+    else s = 'отменён';
+    var expires = Date.parse(imp.expires_at);
+    if (!active && !isNaN(expires) && expires - Date.now() < 14 * 86400000) {
+      s += ' · удалится ' + formatDate(isoDate(new Date(expires)));
+    }
+    return s;
+  }
+
+  function stCreatedText(iso) {
+    var t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    var d = new Date(t);
+    return formatDate(isoDate(d)) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function stImportRowHtml(imp) {
+    var id = imp.import_id;
+    var active = ST_ACTIVE.indexOf(imp.status) >= 0;
+    var wallet = aiFindWallet(imp.wallet_uuid);
+    var p = imp.progress;
+    var bar = imp.status === 'extracting' && p && p.total > 0
+      ? '<div class="st-progress"><span style="width:' + Math.round(100 * p.done / p.total) + '%"></span></div>' : '';
+    var meta = [wallet ? wallet.name : '', stCreatedText(imp.created_at)].filter(Boolean).join(' · ');
+    var profile = stProfileText(imp);
+    var fresh = imp.status === 'ready' && stSeen().indexOf(id) < 0;
+    var actions;
+    if (stConfirmDelete === id) {
+      actions = '<span class="st-confirm-text">' + (active ? 'Отменить разбор?' : 'Удалить импорт?') + '</span>' +
+        '<button type="button" class="btn-chip access-danger" data-st-del-yes="' + escapeHtml(id) + '">' +
+        (active ? 'Да, отменить' : 'Да, удалить') + '</button>' +
+        '<button type="button" class="btn-chip" data-st-del-no>Нет</button>';
+    } else {
+      actions =
+        (imp.status === 'ready' || imp.status === 'done'
+          ? '<button type="button" class="btn-chip st-open-btn" data-st-open="' + escapeHtml(id) + '">' +
+            (imp.status === 'ready' ? 'Проверить' : 'Открыть') + '</button>' : '') +
+        (imp.status === 'failed' && (imp.failure === 'timeout' || imp.failure === 'unavailable')
+          ? '<button type="button" class="btn-chip" data-st-retry="' + escapeHtml(id) + '">Повторить</button>' : '') +
+        '<button type="button" class="btn-chip" data-st-del="' + escapeHtml(id) + '">' + (active ? 'Отменить' : 'Удалить') + '</button>';
+    }
+    return '<div class="st-import' + (stHighlight === id ? ' highlight' : '') + (fresh ? ' fresh' : '') + '">' +
+      '<div class="st-import-main">' +
+      '<div class="st-import-name">' + escapeHtml(imp.source_name || 'Текст') + '</div>' +
+      '<div class="st-import-meta">' + escapeHtml(meta) + '</div>' +
+      (profile ? '<div class="st-import-meta">' + escapeHtml(profile) + '</div>' : '') +
+      '<div class="st-import-status st-status-' + escapeHtml(imp.status) + '">' + escapeHtml(stStatusText(imp)) + '</div>' +
+      bar +
+      '</div>' +
+      '<div class="st-import-actions">' + actions + '</div>' +
+      '</div>';
+  }
+
+  function stRenderList() {
+    var el = document.getElementById('st-list');
+    if (!el) return;
+    var html = '<h3 class="st-list-title">Загруженные выписки</h3>';
+    if (stListNotice) html += '<p class="err">' + escapeHtml(stListNotice) + '</p>';
+    if (stListError) html += '<p class="err">' + escapeHtml(stListError) + '</p>';
+    if (!stImports) html += stListError ? '' : '<p class="sub">Загрузка…</p>';
+    else if (!stImports.length) html += '<p class="sub">Пока ни одной выписки.</p>';
+    else html += '<div class="st-imports">' + stImports.map(stImportRowHtml).join('') + '</div>';
+    el.innerHTML = html;
+  }
+
+  function stDeleteImport(id) {
+    stConfirmDelete = null;
+    stApi('DELETE', stImportUrl(id))
+      .then(function () {}, function (err) {
+        if (err.status !== 404) stListNotice = 'Не удалось удалить: ' + err.message;
+      })
+      .then(function () {
+        if (stImports) stImports = stImports.filter(function (imp) { return imp.import_id !== id; });
+        if (stHighlight === id) stHighlight = null;
+        stUpdateBadge();
+        stRenderList();
+        stLoadImports();
+      });
+  }
+
+  function stRetryImport(id) {
+    stListNotice = '';
+    stApi('POST', stImportUrl(id) + '/retry')
+      .then(function () {}, function (err) {
+        var code = err.body && err.body.error;
+        stListNotice = code === 'import_in_progress' ? 'Уже разбирается другая выписка — дождитесь её или отмените'
+          : 'Не удалось продолжить разбор: ' + err.message;
+      })
+      .then(stLoadImports);
+  }
+
+  // --- Мои форматы ---
+
+  function stLoadProfiles() {
+    stApi('GET', '/api/ai/statement-profiles').then(function (data) {
+      if (!data) return;
+      stProfiles = data.profiles || [];
+      stRenderProfileOptions();
+      stRenderOwn();
+    }, function () {
+      stProfiles = stProfiles || [];
+    });
+  }
+
+  function stRenderOwn() {
+    var el = document.getElementById('st-own');
+    if (!el) return;
+    var own = (stProfiles || []).filter(function (p) { return p.kind === 'own'; });
+    if (!own.length) {
+      el.innerHTML = '';
+      return;
+    }
+    var details = el.querySelector('details');
+    var open = (details && details.open) || !!stRename || !!stConfirmProfileDelete;
+    el.innerHTML =
+      '<details class="st-own"' + (open ? ' open' : '') + '>' +
+      '<summary>Мои форматы · ' + own.length + '</summary>' +
+      own.map(function (p) {
+        var actions;
+        var name = '<span class="st-own-name">' + escapeHtml(p.name) + '</span>';
+        if (stRename && stRename.id === p.id) {
+          name = '<input type="text" class="st-own-input" id="st-own-input" maxlength="100" value="' + escapeHtml(stRename.name) + '">';
+          actions = '<button type="button" class="btn-chip" data-own-save>Сохранить</button>' +
+            '<button type="button" class="btn-chip" data-own-cancel>Отмена</button>';
+        } else if (stConfirmProfileDelete === p.id) {
+          actions = '<span class="st-confirm-text">Удалить формат вместе с примерами?</span>' +
+            '<button type="button" class="btn-chip access-danger" data-own-del-yes="' + escapeHtml(p.id) + '">Да, удалить</button>' +
+            '<button type="button" class="btn-chip" data-own-cancel>Нет</button>';
+        } else {
+          actions = '<button type="button" class="btn-chip" data-own-rename="' + escapeHtml(p.id) + '">Переименовать</button>' +
+            '<button type="button" class="btn-chip" data-own-del="' + escapeHtml(p.id) + '">Удалить</button>';
+        }
+        var n = p.examples || 0;
+        return '<div class="st-own-row">' + name +
+          '<span class="st-own-meta">' + n + ' ' + pluralRu(n, ['пример', 'примера', 'примеров']) + '</span>' +
+          '<span class="st-own-actions">' + actions + '</span></div>';
+      }).join('') +
+      '<p class="sub st-own-hint">Свой формат появляется, когда вы исправляете сумму, дату или направление строки: ' +
+      'исправленные строки становятся примерами для следующих выписок того же формата.</p>' +
+      '</details>';
+    var input = document.getElementById('st-own-input');
+    if (input) {
+      input.focus();
+      input.addEventListener('input', function () { stRename.name = input.value; });
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') stSaveRename();
+        if (ev.key === 'Escape') {
+          stRename = null;
+          stRenderOwn();
+        }
+      });
+    }
+  }
+
+  function stSaveRename() {
+    var r = stRename;
+    if (!r || !r.name.trim()) return;
+    stApi('PATCH', '/api/ai/statement-profiles/' + encodeURIComponent(r.id), { name: r.name.trim() })
+      .then(function () {
+        stRename = null;
+        stLoadProfiles();
+      }, function (err) {
+        stRename = null;
+        stListNotice = 'Не удалось переименовать формат: ' + err.message;
+        stRenderList();
+        stRenderOwn();
+      });
+  }
+
+  function stDeleteProfile(id) {
+    stConfirmProfileDelete = null;
+    stApi('DELETE', '/api/ai/statement-profiles/' + encodeURIComponent(id))
+      .then(function () {}, function (err) {
+        if (err.status !== 404) {
+          stListNotice = 'Не удалось удалить формат: ' + err.message;
+          stRenderList();
+        }
+      })
+      .then(stLoadProfiles);
+  }
+
+  // Делегирование на весь раздел: контейнеры перерисовываются, а обработчики
+  // остаются на корне (#st-root живёт, пока открыты «Отчёты»).
+  function stWireSection(root) {
+    if (root.getAttribute('data-wired') === 'list') return;
+    root.setAttribute('data-wired', 'list');
+    root.addEventListener('input', function (ev) {
+      if (stDetail || !stForm) return;
+      if (ev.target.id === 'st-text') {
+        stForm.text = ev.target.value;
+        stUpdateFormState();
+      }
+    });
+    root.addEventListener('change', function (ev) {
+      if (stDetail || !stForm) return;
+      var t = ev.target;
+      if (t.id === 'st-wallet') stForm.walletUuid = t.value;
+      else if (t.id === 'st-profile') {
+        stForm.profile = t.value;
+        stSetPref(ST_PROFILE_KEY, t.value);
+      } else if (t.id === 'st-file') {
+        var file = t.files && t.files[0];
+        if (!file) return;
+        var problem = stFileProblem(file);
+        stForm.file = problem ? null : file;
+        stForm.error = problem;
+        stRenderForm();
+        return;
+      } else return;
+      stUpdateFormState();
+    });
+    root.addEventListener('click', function (ev) {
+      if (stDetail) return;
+      var t = ev.target.closest('button');
+      if (!t) return;
+      var mode = t.getAttribute('data-st-mode');
+      if (mode) {
+        stForm.mode = mode;
+        stForm.error = '';
+        stRenderForm();
+        return;
+      }
+      if (t.id === 'st-submit') return stSubmit();
+      if (t.hasAttribute('data-st-open')) return stOpenImport(t.getAttribute('data-st-open'));
+      if (t.hasAttribute('data-st-retry')) return stRetryImport(t.getAttribute('data-st-retry'));
+      if (t.hasAttribute('data-st-del')) {
+        stConfirmDelete = t.getAttribute('data-st-del');
+        return stRenderList();
+      }
+      if (t.hasAttribute('data-st-del-no')) {
+        stConfirmDelete = null;
+        return stRenderList();
+      }
+      if (t.hasAttribute('data-st-del-yes')) return stDeleteImport(t.getAttribute('data-st-del-yes'));
+      if (t.hasAttribute('data-own-rename')) {
+        var id = t.getAttribute('data-own-rename');
+        var p = (stProfiles || []).filter(function (x) { return x.id === id; })[0];
+        stRename = { id: id, name: p ? p.name : '' };
+        stConfirmProfileDelete = null;
+        return stRenderOwn();
+      }
+      if (t.hasAttribute('data-own-save')) return stSaveRename();
+      if (t.hasAttribute('data-own-cancel')) {
+        stRename = null;
+        stConfirmProfileDelete = null;
+        return stRenderOwn();
+      }
+      if (t.hasAttribute('data-own-del')) {
+        stConfirmProfileDelete = t.getAttribute('data-own-del');
+        stRename = null;
+        return stRenderOwn();
+      }
+      if (t.hasAttribute('data-own-del-yes')) return stDeleteProfile(t.getAttribute('data-own-del-yes'));
+    });
+  }
+
+  // --- Экран проверки (#/reports/ai/import/<id>, D1) ---
+  //
+  // stDetail: {id, data — ответ GET /imports/{id}, error, loading, timer,
+  //   q — поиск, groups — {группа: выбрана}, selected — {row_id: true},
+  //   limit — порция строк, saving — {row_id: правок в полёте},
+  //   rowError — {row_id: {field, message}}, srcOpen — {row_id: true},
+  //   queue — Promise последней правки (правки идут по одной, D5),
+  //   rendered — что нарисовано в таблице, addLine — форма «Добавить как
+  //   операцию», confirmWrite, write — {done, total, busy, error}, doneLine}
+
+  function stShowImport(id) {
+    if (stDetail && stDetail.id === id) return;
+    if (stDetail) clearTimeout(stDetail.timer);
+    stDetail = id ? {
+      id: id,
+      data: null,
+      error: '',
+      loading: false,
+      timer: null,
+      q: '',
+      groups: { ready: true, needs_category: true, possible_duplicate: true, check: true },
+      selected: {},
+      limit: ST_PAGE,
+      saving: {},
+      rowError: {},
+      srcOpen: {},
+      queue: Promise.resolve(),
+      rendered: null,
+      addLine: null,
+      confirmWrite: false,
+      write: null,
+      doneLine: '',
+    } : null;
+    stRender();
+    if (!stDetail) stLoadImports();
+  }
+
+  // «Проверить» в списке — переход с записью в истории (и «← Назад», и
+  // браузерное «Назад» возвращают к списку).
+  function stOpenImport(id) {
+    pushReportsHistory();
+    stShowImport(id);
+    pushReportsUrlState('ai');
+    window.scrollTo(0, 0);
+  }
+
+  function stBackToList() {
+    var top = reportsHistory[reportsHistory.length - 1];
+    if (top && top.view === 'ai' && !top.aiImport) {
+      goReportsBack();
+      return;
+    }
+    stShowImport(null);
+    pushReportsUrlState('ai');
+  }
+
+  function stLoadDetail(reconcile) {
+    var d = stDetail;
+    if (!d || !aiHas('statement_import')) return;
+    clearTimeout(d.timer);
+    d.loading = true;
+    stApi('GET', stImportUrl(d.id) + (reconcile ? '?reconcile=1' : ''))
+      .then(function (data) {
+        if (stDetail !== d || !data) return;
+        d.loading = false;
+        d.error = '';
+        d.data = data;
+        if (data.status === 'ready' || data.status === 'done') stMarkSeen(d.id);
+        stRenderDetail();
+        if (ST_ACTIVE.indexOf(data.status) >= 0) {
+          d.timer = setTimeout(function () { if (stDetail === d) stLoadDetail(false); }, 5000);
+        }
+      }, function (err) {
+        if (stDetail !== d) return;
+        d.loading = false;
+        d.error = err.status === 404 ? 'Импорт не найден — он удалён или истёк' : 'Не удалось загрузить импорт: ' + err.message;
+        stRenderDetail();
+      });
+  }
+
+  function stWallet(d) {
+    return d.data ? aiFindWallet(d.data.wallet_uuid) : null;
+  }
+
+  function stSymbol(d) {
+    var w = stWallet(d);
+    return w ? (w.symbol || w.iso_code) : '';
+  }
+
+  function stGroupIndex(g) {
+    for (var i = 0; i < ST_GROUPS.length; i++) if (ST_GROUPS[i][0] === g) return i;
+    return ST_GROUPS.length;
+  }
+
+  function stVisibleRows(d) {
+    var q = d.q.trim().toLowerCase();
+    var rows = (d.data.rows || []).filter(function (r) {
+      if (!d.groups[r.group]) return false;
+      if (!q) return true;
+      return (r.description || '').toLowerCase().indexOf(q) >= 0 || (r.comment || '').toLowerCase().indexOf(q) >= 0;
+    });
+    // Группы — в порядке чипов, внутри группы — по дате (стабильно).
+    return rows.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) {
+      var g = stGroupIndex(a.r.group) - stGroupIndex(b.r.group);
+      if (g) return g;
+      if (a.r.date !== b.r.date) return a.r.date < b.r.date ? -1 : 1;
+      return a.i - b.i;
+    }).map(function (x) { return x.r; });
+  }
+
+  function stVisibleUnparsed(d) {
+    if (!d.groups.unparsed) return [];
+    var q = d.q.trim().toLowerCase();
+    return (d.data.unparsed || []).filter(function (u) { return !q || u.text.toLowerCase().indexOf(q) >= 0; });
+  }
+
+  // Строку можно править и выбирать: импорт ready, строка не записана и это расход.
+  function stRowEditable(d, r) {
+    return d.data.status === 'ready' && !r.committed && r.dir === 'expense';
+  }
+
+  function stCategoryOptionsHtml(r) {
+    var cats = aiAccounts ? aiAccounts.categories : [];
+    var suggested = null;
+    if (!r.category_uuid && r.suggestion) {
+      cats.forEach(function (c) { if (c.name === r.suggestion) suggested = c; });
+    }
+    var html = '<option value=""' + (r.category_uuid ? '' : ' selected') + '>' + (suggested ? '—' : 'Выберите категорию') + '</option>';
+    if (suggested) {
+      html += '<option value="' + escapeHtml(suggested.uuid) + '">' + escapeHtml(suggested.name) + ' · ИИ предлагает</option>';
+    }
+    var known = false;
+    cats.forEach(function (c) {
+      if (c === suggested) return;
+      if (c.uuid === r.category_uuid) known = true;
+      html += '<option value="' + escapeHtml(c.uuid) + '"' + (c.uuid === r.category_uuid ? ' selected' : '') + '>' +
+        escapeHtml(c.name) + '</option>';
+    });
+    if (r.category_uuid && !known) {
+      html += '<option value="' + escapeHtml(r.category_uuid) + '" selected>Категория в архиве</option>';
+    }
+    return html;
+  }
+
+  function stProblemText(d, r) {
+    if (r.check) return ST_CHECK_TEXT[r.check] || r.check;
+    if (r.decision === 'skip') return 'пропущена — не будет записана';
+    if (r.match === 'imported' && r.group === 'imported') return 'уже импортировано из выписки раньше';
+    if ((r.group === 'possible_duplicate' || r.group === 'exists') && r.match_candidates && r.match_candidates.length) {
+      return 'похоже на: ' + r.match_candidates.map(function (c) {
+        return formatDate(c.date) + ' ' + groupThousands(r.amount) + ' ' + stSymbol(d);
+      }).join('; ');
+    }
+    if (r.group === 'exists') return 'отмечено как дубль';
+    return '';
+  }
+
+  function stRowActionsHtml(d, r) {
+    if (r.committed) return '<span class="st-mark-done">записано</span>';
+    if (!stRowEditable(d, r)) return '';
+    function btn(decision, label) {
+      return '<button type="button" class="btn-chip" data-dec="' + decision + '">' + label + '</button>';
+    }
+    if (r.decision === 'skip') return btn('null', 'Вернуть');
+    var html = '';
+    if (r.group === 'possible_duplicate') html += btn('duplicate', 'Это дубль') + btn('include', 'Это новая');
+    if (r.group === 'exists' || r.group === 'imported') html += btn('include', 'Всё равно записать');
+    return html + btn('skip', 'Пропустить');
+  }
+
+  function stFieldId(rowId, field) {
+    return 'st-f-' + rowId + '-' + field;
+  }
+
+  function stRowHtml(d, r) {
+    var editable = stRowEditable(d, r);
+    var off = editable ? '' : ' disabled';
+    var err = d.rowError[r.row_id];
+    var src = (r.lines || []).map(function (l) { return l.n + '| ' + l.text; }).join('\n');
+    var problem = stProblemText(d, r);
+    var cat;
+    if (r.dir !== 'expense') {
+      cat = '<span class="st-dir">' + (r.dir === 'income' ? 'доход' : 'перевод') + ' — не записывается</span>';
+    } else {
+      cat = '<select id="' + stFieldId(r.row_id, 'category') + '" data-f="category"' +
+        (err && err.field === 'category' ? ' class="invalid"' : '') + off + '>' + stCategoryOptionsHtml(r) + '</select>' +
+        (r.category_uuid && ST_SOURCE_TEXT[r.source] ? '<span class="st-cat-source">' + ST_SOURCE_TEXT[r.source] + '</span>' : '');
+    }
+    function invalid(field) { return err && err.field === field ? ' class="invalid"' : ''; }
+    return '<div class="st-row' + (r.decision === 'skip' ? ' skipped' : '') + (r.committed ? ' committed' : '') +
+      (d.selected[r.row_id] ? ' selected' : '') + ' st-g-' + r.group + '" role="row" data-row="' + escapeHtml(r.row_id) + '">' +
+      '<span class="st-c-check"><input type="checkbox" data-sel aria-label="Выбрать строку"' +
+      (d.selected[r.row_id] ? ' checked' : '') + off + '></span>' +
+      '<span class="st-c-date"><input type="date" id="' + stFieldId(r.row_id, 'date') + '" data-f="date" max="' + isoDate(new Date()) +
+      '" value="' + escapeHtml(r.date) + '"' + invalid('date') + off + '></span>' +
+      '<span class="st-c-desc">' +
+      '<span class="st-desc-line"><span class="st-desc" title="' + escapeHtml(src) + '">' + escapeHtml(r.description || '—') + '</span>' +
+      (src ? '<button type="button" class="st-src-btn" data-src aria-label="Строка из выписки" title="Строка из выписки">i</button>' : '') +
+      '</span>' +
+      (d.srcOpen[r.row_id] ? '<pre class="st-src">' + escapeHtml(src) + '</pre>' : '') +
+      '<input type="text" class="st-comment' + (err && err.field === 'comment' ? ' invalid' : '') + '" id="' +
+      stFieldId(r.row_id, 'comment') + '" data-f="comment" maxlength="255" ' +
+      'placeholder="Комментарий" value="' + escapeHtml(r.comment || '') + '"' + off + '>' +
+      (problem ? '<span class="st-problem">' + escapeHtml(problem) + '</span>' : '') +
+      (d.saving[r.row_id] ? '<span class="st-saving">сохраняю…</span>' : '') +
+      (err ? '<span class="st-row-error">' + escapeHtml(err.message) + '</span>' : '') +
+      '</span>' +
+      '<span class="st-c-amount"><input type="text" inputmode="decimal" id="' + stFieldId(r.row_id, 'amount') + '" data-f="amount" value="' +
+      escapeHtml(r.amount) + '"' + invalid('amount') + off + '><span class="st-sym">' + escapeHtml(stSymbol(d)) + '</span></span>' +
+      '<span class="st-c-cat">' + cat + '</span>' +
+      '<span class="st-c-act">' + stRowActionsHtml(d, r) + '</span>' +
+      '</div>';
+  }
+
+  function stUnparsedHtml(d, u) {
+    var a = d.addLine;
+    if (a && a.n === u.n) {
+      return '<div class="st-row st-unparsed st-adding" role="row" data-line="' + u.n + '">' +
+        '<pre class="st-src">' + escapeHtml(u.n + '| ' + u.text) + '</pre>' +
+        '<div class="st-add-grid">' +
+        '<label class="ai-field">Дата<input type="date" id="st-add-date" max="' + isoDate(new Date()) + '" value="' + escapeHtml(a.date) + '"></label>' +
+        '<label class="ai-field">Сумма<input type="text" inputmode="decimal" id="st-add-amount" value="' + escapeHtml(a.amount) + '"></label>' +
+        '<label class="ai-field">Категория<select id="st-add-category">' +
+        stCategoryOptionsHtml({ category_uuid: a.category, suggestion: null }) + '</select></label>' +
+        '<label class="ai-field ai-field-wide">Описание<input type="text" id="st-add-desc" value="' + escapeHtml(a.description) + '"></label>' +
+        '</div>' +
+        (a.error ? '<p class="err">' + escapeHtml(a.error) + '</p>' : '') +
+        '<div class="st-add-actions">' +
+        '<button type="button" class="btn" data-add-save>' + (a.busy ? 'Добавляю…' : 'Добавить') + '</button>' +
+        '<button type="button" class="btn btn-secondary" data-add-cancel>Отмена</button>' +
+        '</div></div>';
+    }
+    return '<div class="st-row st-unparsed" role="row" data-line="' + u.n + '">' +
+      '<pre class="st-src">' + escapeHtml(u.n + '| ' + u.text) + '</pre>' +
+      (d.data.status === 'ready' ? '<button type="button" class="btn-chip" data-add-line="' + u.n + '">Добавить как операцию</button>' : '') +
+      '</div>';
+  }
+
+  function stRenderDetail() {
+    var el = document.getElementById('st-detail');
+    var d = stDetail;
+    if (!el || !d) return;
+    var back = '<button type="button" class="btn-chip st-back" data-st-back>← К импортам</button>';
+    if (d.error) {
+      el.innerHTML = back + reportsErrorHtml(d.error);
+      stWireDetail(el);
+      return;
+    }
+    if (!d.data) {
+      el.innerHTML = back + '<p class="sub">Загрузка…</p>';
+      stWireDetail(el);
+      return;
+    }
+    var imp = d.data;
+    var wallet = stWallet(d);
+    var profile = stProfileText(imp);
+    var head =
+      back +
+      '<div class="st-d-head">' +
+      '<h2>' + escapeHtml(imp.source_name || 'Текст') + '</h2>' +
+      '<div class="st-import-meta">' + escapeHtml([wallet ? wallet.name : '', stCreatedText(imp.created_at)].filter(Boolean).join(' · ')) + '</div>' +
+      (profile ? '<div class="st-import-meta">' + escapeHtml(profile) + '</div>' : '') +
+      (imp.profile_detect === 'none' || imp.profile_detect === 'ambiguous'
+        ? '<div class="st-import-meta st-hint">Исправленные строки станут примерами для следующей выписки этого формата</div>' : '') +
+      '</div>';
+    if (imp.status !== 'ready' && imp.status !== 'done') {
+      var p = imp.progress;
+      el.innerHTML = head +
+        '<div class="ai-status' + (imp.status === 'failed' ? ' ai-status-fail' : '') + '">' +
+        (ST_ACTIVE.indexOf(imp.status) >= 0 ? '<span class="ai-spinner" aria-hidden="true"></span>' : '') +
+        escapeHtml(stStatusText(imp)) + '</div>' +
+        (imp.status === 'extracting' && p && p.total > 0
+          ? '<div class="st-progress"><span style="width:' + Math.round(100 * p.done / p.total) + '%"></span></div>' : '') +
+        (ST_ACTIVE.indexOf(imp.status) >= 0 ? '<p class="sub">Экран обновится сам, когда разбор закончится.</p>' : '');
+      stWireDetail(el);
+      return;
+    }
+    el.innerHTML = head +
+      (imp.reconciled === false
+        ? '<div class="ai-status ai-status-fail"><span>Не удалось сверить с внесёнными операциями — дубли не отмечены</span>' +
+          '<button type="button" class="btn btn-secondary" data-reconcile>Сверить ещё раз</button></div>' : '') +
+      (d.doneLine ? '<div class="ai-status ai-status-done">' + escapeHtml(d.doneLine) + '</div>' : '') +
+      '<div class="st-chips" id="st-chips"></div>' +
+      '<input type="search" class="st-search" id="st-search" placeholder="Поиск по описанию" value="' + escapeHtml(d.q) + '">' +
+      '<div class="st-table" role="table">' +
+      '<div class="st-row st-head" role="row">' +
+      '<span class="st-c-check"><input type="checkbox" id="st-select-all" aria-label="Выбрать все видимые"></span>' +
+      '<span class="st-c-date">Дата</span><span class="st-c-desc">Описание</span><span class="st-c-amount">Сумма</span>' +
+      '<span class="st-c-cat">Категория</span><span class="st-c-act"></span>' +
+      '</div>' +
+      '<div id="st-rows"></div>' +
+      '</div>' +
+      '<div class="st-footbar" id="st-footbar"></div>';
+    d.rendered = null;
+    stRenderChips();
+    stRenderRows();
+    stRenderFoot();
+    stWireDetail(el);
+  }
+
+  function stRenderChips() {
+    var d = stDetail;
+    var el = document.getElementById('st-chips');
+    if (!el || !d || !d.data) return;
+    var groups = d.data.groups || {};
+    el.innerHTML = ST_GROUPS.map(function (g) {
+      var n = groups[g[0]] || 0;
+      return '<button type="button" class="ops-chip st-chip' + (d.groups[g[0]] ? ' active' : '') + (n ? '' : ' empty') +
+        '" data-g="' + g[0] + '" aria-pressed="' + (d.groups[g[0]] ? 'true' : 'false') + '">' +
+        escapeHtml(g[1]) + ' <b>' + n + '</b></button>';
+    }).join('');
+  }
+
+  // Таблица: если набор видимых строк не изменился — заменяются только
+  // изменившиеся строки (правка соседней строки не сбивает ввод в этой),
+  // иначе — перерисовка целиком с возвратом фокуса в то же поле.
+  function stRenderRows(full) {
+    var d = stDetail;
+    var el = document.getElementById('st-rows');
+    if (!el || !d || !d.data) return;
+    var all = stVisibleRows(d);
+    var rows = all.slice(0, d.limit);
+    var unparsed = stVisibleUnparsed(d);
+    var ids = rows.map(function (r) { return r.row_id; });
+    var html = {};
+    rows.forEach(function (r) { html[r.row_id] = stRowHtml(d, r); });
+    var tail = (all.length > rows.length
+      ? '<button type="button" class="btn btn-secondary st-more" data-more>Показать ещё (' + (all.length - rows.length) + ')</button>' : '') +
+      (unparsed.length ? '<div class="st-unparsed-title">Не разобрано — строки выписки с суммой, которых нет среди операций</div>' +
+        unparsed.map(function (u) { return stUnparsedHtml(d, u); }).join('') : '') +
+      (!rows.length && !unparsed.length ? '<p class="sub st-empty">Нет строк под выбранными группами.</p>' : '');
+    var prev = d.rendered;
+    var active = document.activeElement;
+    var activeId = active && active.id && active.id.indexOf('st-') === 0 ? active.id : '';
+    if (!full && prev && prev.ids.join(',') === ids.join(',') && prev.tail === tail) {
+      ids.forEach(function (id) {
+        if (prev.html[id] === html[id]) return;
+        var old = el.querySelector('[data-row="' + id + '"]');
+        if (old) old.outerHTML = html[id];
+      });
+    } else {
+      el.innerHTML = ids.map(function (id) { return html[id]; }).join('') + tail;
+    }
+    d.rendered = { ids: ids, html: html, tail: tail };
+    if (activeId && document.activeElement !== active) {
+      var again = document.getElementById(activeId);
+      if (again) again.focus();
+    }
+    var all2 = document.getElementById('st-select-all');
+    if (all2) {
+      var selectable = rows.filter(function (r) { return stRowEditable(d, r); });
+      all2.checked = selectable.length > 0 && selectable.every(function (r) { return d.selected[r.row_id]; });
+      all2.disabled = !selectable.length;
+    }
+  }
+
+  function stSelectedIds(d) {
+    return Object.keys(d.selected).filter(function (id) { return d.selected[id]; });
+  }
+
+  function stOperationsTotal(d, ops) {
+    var cents = 0;
+    ops.forEach(function (o) { cents += Math.round(parseFloat(o.amount) * 100); });
+    return fmtNative((cents / 100).toFixed(2), stSymbol(d));
+  }
+
+  function stRenderFoot() {
+    var d = stDetail;
+    var el = document.getElementById('st-footbar');
+    if (!el || !d || !d.data) return;
+    var ops = d.data.operations || [];
+    var selected = stSelectedIds(d);
+    var html = '';
+    if (selected.length) {
+      html += '<div class="st-bulk">' +
+        '<span class="st-bulk-count">Выбрано ' + selected.length + ':</span>' +
+        '<select id="st-bulk-category" aria-label="Категория для выбранных">' +
+        stCategoryOptionsHtml({ category_uuid: null, suggestion: null }).replace('Выберите категорию', 'Категория…') + '</select>' +
+        '<button type="button" class="btn-chip" data-bulk-skip>Пропустить</button>' +
+        '<button type="button" class="btn-chip" data-bulk-clear>Снять выбор</button>' +
+        '</div>';
+    }
+    var w = d.write;
+    var wallet = stWallet(d);
+    if (d.confirmWrite) {
+      var unparsed = (d.data.groups || {}).unparsed || 0;
+      html += '<div class="st-confirm">' +
+        '<p>Записать ' + ops.length + ' ' + pluralRu(ops.length, ['операцию', 'операции', 'операций']) +
+        ' в «' + escapeHtml(wallet ? wallet.name : '') + '» на сумму ' + stOperationsTotal(d, ops) + '?</p>' +
+        (unparsed ? '<p class="st-confirm-warn">Ещё ' + unparsed + ' ' + pluralRu(unparsed, ['строка', 'строки', 'строк']) +
+          ' выписки не разобрано — <button type="button" class="link-btn" data-show-unparsed>посмотреть</button></p>' : '') +
+        '<div class="st-add-actions"><button type="button" class="btn" data-write-yes>Записать</button>' +
+        '<button type="button" class="btn btn-secondary" data-write-no>Отмена</button></div>' +
+        '</div>';
+    } else if (w && (w.busy || w.error)) {
+      html += '<div class="st-write-status' + (w.error ? ' fail' : '') + '">' +
+        (w.busy ? '<span class="ai-spinner" aria-hidden="true"></span>' : '') +
+        '<span>Записано ' + w.done + ' из ' + w.total + (w.error ? '. Не удалось записать остальные — ' + escapeHtml(w.error) : '') + '</span>' +
+        (w.error ? '<button type="button" class="btn" data-write-retry>Повторить</button>' : '') +
+        '</div>';
+    } else if (d.data.status === 'ready') {
+      html += '<button type="button" class="btn st-write-btn" data-write' + (ops.length ? '' : ' disabled') + '>Записать ' + ops.length + '</button>';
+    }
+    el.innerHTML = html;
+    el.hidden = !html;
+  }
+
+  function stAfterData(d) {
+    var rows = d.data.rows || [];
+    var alive = {};
+    rows.forEach(function (r) { if (stRowEditable(d, r)) alive[r.row_id] = true; });
+    Object.keys(d.selected).forEach(function (id) { if (!alive[id]) delete d.selected[id]; });
+    stRenderChips();
+    stRenderRows();
+    stRenderFoot();
+  }
+
+  // Правки строк (D5): по одной в полёте — следующая ждёт ответа предыдущей,
+  // ответ сервера — источник истины (в нём и соседние строки по правилу).
+  // Ошибка — значение откатывается (строка рисуется из прежнего ответа).
+  function stPatchRows(patches, field) {
+    var d = stDetail;
+    if (!d || !patches.length) return;
+    var ids = patches.map(function (p) { return p.row_id; });
+    ids.forEach(function (id) {
+      d.saving[id] = (d.saving[id] || 0) + 1;
+      delete d.rowError[id];
+    });
+    stRenderRows();
+    d.queue = d.queue
+      .then(function () { return stApi('PATCH', stImportUrl(d.id) + '/rows', { rows: patches }); })
+      .then(function (data) {
+        ids.forEach(function (id) { d.saving[id] -= 1; });
+        if (stDetail !== d || !data) return;
+        d.data = data;
+        stAfterData(d);
+      }, function (err) {
+        ids.forEach(function (id) { d.saving[id] -= 1; });
+        if (stDetail !== d) return;
+        var code = err.body && err.body.error;
+        var message = ST_PATCH_ERROR[code] || 'Не сохранилось: ' + err.message;
+        ids.forEach(function (id) { d.rowError[id] = { field: field, message: message }; });
+        if (err.status === 409) stLoadDetail(false);
+        stRenderRows(true);
+      });
+  }
+
+  function stNormalizeAmount(value) {
+    var a = value.replace(/[\s ]/g, '').replace(',', '.');
+    return /^\d+(\.\d{1,2})?$/.test(a) && parseFloat(a) > 0 ? a : '';
+  }
+
+  function stEditRow(rowId, field, value) {
+    var d = stDetail;
+    var patch = { row_id: rowId };
+    if (field === 'amount') {
+      var amount = stNormalizeAmount(value);
+      if (!amount) {
+        d.rowError[rowId] = { field: 'amount', message: ST_PATCH_ERROR.bad_amount };
+        stRenderRows(true);
+        return;
+      }
+      patch.amount = amount;
+    } else if (field === 'date') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        d.rowError[rowId] = { field: 'date', message: 'Укажите дату' };
+        stRenderRows(true);
+        return;
+      }
+      patch.date = value;
+    } else if (field === 'category') {
+      patch.category_uuid = value || null;
+    } else if (field === 'comment') {
+      patch.comment = value.trim() ? value.trim().slice(0, 255) : null;
+    }
+    stPatchRows([patch], field);
+  }
+
+  function stAddRow() {
+    var d = stDetail;
+    var a = d && d.addLine;
+    if (!a || a.busy) return;
+    var amount = stNormalizeAmount(a.amount);
+    if (!amount) a.error = ST_PATCH_ERROR.bad_amount;
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(a.date)) a.error = 'Укажите дату';
+    else a.error = '';
+    if (a.error) {
+      stRenderRows(true);
+      return;
+    }
+    a.busy = true;
+    stRenderRows(true);
+    var body = { line: a.n, amount: amount, date: a.date, description: a.description.trim() };
+    if (a.category) body.category_uuid = a.category;
+    d.queue = d.queue
+      .then(function () { return stApi('POST', stImportUrl(d.id) + '/rows', body); })
+      .then(function (data) {
+        if (stDetail !== d || !data) return;
+        d.addLine = null;
+        d.data = data;
+        stAfterData(d);
+      }, function (err) {
+        if (stDetail !== d) return;
+        a.busy = false;
+        a.error = ST_PATCH_ERROR[err.body && err.body.error] || 'Не удалось добавить: ' + err.message;
+        stRenderRows(true);
+      });
+  }
+
+  // POST /sync/push одной пачкой (тот же путь и та же таблица исходов, что у
+  // траты текстом, см. aiPush). batch_id — новый на каждую отправку:
+  // идемпотентность держится на uuid операций (op_uuid импорта, D6).
+  function stPush(batch, retriedDevice) {
+    return apiFetch('/sync/push', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batch_id: uuidV4(),
+        device_name: 'Веб-браузер',
+        changes: {
+          operation: batch.map(function (o) {
+            return { uuid: o.uuid, date: o.date, acc_fr_uuid: o.acc_fr_uuid, acc_to_uuid: o.acc_to_uuid, amount: o.amount, comment: o.comment };
+          }),
+        },
+      }),
+    }).then(function (res) {
+      if (res.status === 401) {
+        renderLogin();
+        var stop = new Error('login');
+        stop.login = true;
+        throw stop;
+      }
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (res.ok) return;
+        var code = data && data.error ? data.error : '';
+        if (res.status === 403 && code === 'device_required') {
+          if (retriedDevice) throw new Error('перезайдите, чтобы записывать траты из браузера');
+          return fetch('/auth/refresh', { method: 'POST', credentials: 'include' }).then(function () {
+            return stPush(batch, true);
+          });
+        }
+        if (res.status >= 500) throw new Error('попробуйте ещё раз');
+        throw new Error(AI_PUSH_ERROR_TEXT[code] || code || 'HTTP ' + res.status);
+      });
+    }, function () {
+      throw new Error('попробуйте ещё раз');
+    });
+  }
+
+  function stPushBatches(d, ops) {
+    if (!ops.length) return Promise.resolve();
+    var batch = ops.slice(0, ST_PUSH_BATCH);
+    return stPush(batch, false)
+      .then(function () {
+        return stApi('POST', stImportUrl(d.id) + '/committed', { row_ids: batch.map(function (o) { return o.row_id; }) })
+          .catch(function () { throw new Error('попробуйте ещё раз'); });
+      })
+      .then(function (data) {
+        if (!data) {
+          var stop = new Error('login');
+          stop.login = true;
+          throw stop;
+        }
+        d.write.done += batch.length;
+        if (stDetail === d) {
+          d.data = data;
+          stAfterData(d);
+        }
+        return stPushBatches(d, ops.slice(ST_PUSH_BATCH));
+      });
+  }
+
+  // «Записать N» (D6): перечитать импорт, записать его готовые операции
+  // пачками по 50 с /committed после каждой. «Повторить» после сбоя —
+  // та же функция: импорт отдаёт только ещё не отмеченные строки.
+  function stWrite() {
+    var d = stDetail;
+    if (!d || (d.write && d.write.busy)) return;
+    d.confirmWrite = false;
+    d.doneLine = '';
+    var done = d.write ? d.write.done : 0;
+    d.write = { done: done, total: done, busy: true, error: '' };
+    stRenderFoot();
+    d.queue = d.queue
+      .then(function () { return stApi('GET', stImportUrl(d.id)); })
+      .then(function (data) {
+        if (!data) {
+          var stop = new Error('login');
+          stop.login = true;
+          throw stop;
+        }
+        d.data = data;
+        var ops = data.operations || [];
+        d.write.total = d.write.done + ops.length;
+        if (stDetail === d) stAfterData(d);
+        return stPushBatches(d, ops);
+      })
+      .then(function () {
+        var written = d.write.done;
+        var left = (d.data.rows || []).filter(function (r) { return !r.committed; }).length;
+        d.write = null;
+        d.doneLine = 'Готово: записано ' + written + ', пропущено ' + left;
+        // Записанное должно появиться в отчётах без F5 — как у траты текстом.
+        reportsCache = {};
+        refreshPeriod();
+        if (stDetail === d) stRenderDetail();
+      }, function (err) {
+        if (err.login) return;
+        d.write.busy = false;
+        d.write.error = err.message || 'попробуйте ещё раз';
+        if (stDetail === d) stRenderFoot();
+      });
+  }
+
+  function stWireDetail(el) {
+    var root = document.getElementById('st-root');
+    if (!root || root.getAttribute('data-wired-detail') === '1') return;
+    root.setAttribute('data-wired-detail', '1');
+    root.addEventListener('click', function (ev) {
+      var d = stDetail;
+      if (!d) return;
+      var t = ev.target.closest('button');
+      if (!t) return;
+      if (t.hasAttribute('data-st-back')) return stBackToList();
+      if (!d.data) return;
+      var rowEl = t.closest('[data-row]');
+      var rowId = rowEl ? rowEl.getAttribute('data-row') : '';
+      if (t.hasAttribute('data-g')) {
+        var g = t.getAttribute('data-g');
+        d.groups[g] = !d.groups[g];
+        d.limit = ST_PAGE;
+        stRenderChips();
+        stRenderRows(true);
+        return;
+      }
+      if (t.hasAttribute('data-reconcile')) return stLoadDetail(true);
+      if (t.hasAttribute('data-src') && rowId) {
+        d.srcOpen[rowId] = !d.srcOpen[rowId];
+        return stRenderRows();
+      }
+      if (t.hasAttribute('data-dec') && rowId) {
+        var dec = t.getAttribute('data-dec');
+        return stPatchRows([{ row_id: rowId, decision: dec === 'null' ? null : dec }], 'decision');
+      }
+      if (t.hasAttribute('data-more')) {
+        d.limit += ST_PAGE;
+        return stRenderRows(true);
+      }
+      if (t.hasAttribute('data-add-line')) {
+        var n = parseInt(t.getAttribute('data-add-line'), 10);
+        var line = (d.data.unparsed || []).filter(function (u) { return u.n === n; })[0];
+        d.addLine = { n: n, date: '', amount: '', category: '', description: line ? line.text.trim() : '', error: '', busy: false };
+        return stRenderRows(true);
+      }
+      if (t.hasAttribute('data-add-cancel')) {
+        d.addLine = null;
+        return stRenderRows(true);
+      }
+      if (t.hasAttribute('data-add-save')) return stAddRow();
+      if (t.hasAttribute('data-bulk-skip')) {
+        return stPatchRows(stSelectedIds(d).map(function (id) { return { row_id: id, decision: 'skip' }; }), 'decision');
+      }
+      if (t.hasAttribute('data-bulk-clear')) {
+        d.selected = {};
+        stRenderRows();
+        return stRenderFoot();
+      }
+      if (t.hasAttribute('data-write')) {
+        d.confirmWrite = true;
+        return stRenderFoot();
+      }
+      if (t.hasAttribute('data-write-no')) {
+        d.confirmWrite = false;
+        return stRenderFoot();
+      }
+      if (t.hasAttribute('data-write-yes') || t.hasAttribute('data-write-retry')) return stWrite();
+      if (t.hasAttribute('data-show-unparsed')) {
+        d.confirmWrite = false;
+        d.groups = { unparsed: true };
+        stRenderChips();
+        stRenderRows(true);
+        stRenderFoot();
+        var rowsEl = document.getElementById('st-rows');
+        if (rowsEl) rowsEl.scrollIntoView({ block: 'start' });
+      }
+    });
+    root.addEventListener('input', function (ev) {
+      var d = stDetail;
+      if (!d) return;
+      var t = ev.target;
+      if (t.id === 'st-search') {
+        d.q = t.value;
+        d.limit = ST_PAGE;
+        stRenderRows(true);
+        return;
+      }
+      if (d.addLine && t.id && t.id.indexOf('st-add-') === 0) {
+        var key = { 'st-add-date': 'date', 'st-add-amount': 'amount', 'st-add-category': 'category', 'st-add-desc': 'description' }[t.id];
+        if (key) d.addLine[key] = t.value;
+      }
+    });
+    root.addEventListener('change', function (ev) {
+      var d = stDetail;
+      if (!d || !d.data) return;
+      var t = ev.target;
+      if (t.id === 'st-add-category' && d.addLine) {
+        d.addLine.category = t.value;
+        return;
+      }
+      if (t.id === 'st-select-all') {
+        stVisibleRows(d).slice(0, d.limit).forEach(function (r) {
+          if (stRowEditable(d, r)) {
+            if (t.checked) d.selected[r.row_id] = true;
+            else delete d.selected[r.row_id];
+          }
+        });
+        stRenderRows();
+        stRenderFoot();
+        return;
+      }
+      if (t.id === 'st-bulk-category') {
+        if (!t.value) return;
+        stPatchRows(stSelectedIds(d).map(function (id) { return { row_id: id, category_uuid: t.value }; }), 'category');
+        return;
+      }
+      var rowEl = t.closest('[data-row]');
+      if (!rowEl) return;
+      var rowId = rowEl.getAttribute('data-row');
+      if (t.hasAttribute('data-sel')) {
+        if (t.checked) d.selected[rowId] = true;
+        else delete d.selected[rowId];
+        stRenderRows();
+        stRenderFoot();
+        return;
+      }
+      var field = t.getAttribute('data-f');
+      if (field) stEditRow(rowId, field, t.value);
+    });
+  }
+
   // Сайдбар-навигация "Отчётов" — группы/пункты взяты из VIEWS в
   // Design/.../Отчёты - веб (офлайн).html (11 пунктов в 4 группах: Обзор ·
   // Куда уходит · Когда · Насколько изменилось — плюс пятая, "Кошелёк", ниже).
@@ -6472,7 +7962,7 @@
     cur: ['Курсы валют', 'Валютные пары и история их курса — добавление, изменение и удаление вручную'],
     acc: ['Доступ и приглашения', 'Кто видит этот кошелёк и как пригласить ещё одного человека'],
     icons: ['Иконки', 'Все иконки, доступные этому кошельку: общий набор и добавленные вами'],
-    ai: ['ИИ', 'Трата своими словами — проверьте и запишите'],
+    ai: ['ИИ', 'Трата своими словами и импорт выписки банка — проверьте и запишите'],
   };
 
   // Текущий пункт навигации — модульная переменная (тот же приём, что и
@@ -6506,6 +7996,8 @@
       periodTo: document.getElementById('period-to').value,
       eqCurrency: document.getElementById('eq-currency').value,
       cmpMode: document.getElementById('structure-cmp-mode').value,
+      // Экран проверки импорта — подсостояние вкладки "ИИ" (#/reports/ai/import/<id>).
+      aiImport: view === 'ai' && stDetail ? stDetail.id : '',
     };
   }
 
@@ -6539,17 +8031,18 @@
       '&to=' + encodeURIComponent(state.periodTo) +
       '&eq=' + encodeURIComponent(state.eqCurrency) +
       '&cmp=' + encodeURIComponent(state.cmpMode);
-    return '#/reports/' + state.view + '?' + query;
+    var tail = state.view === 'ai' && state.aiImport ? '/import/' + encodeURIComponent(state.aiImport) : '';
+    return '#/reports/' + state.view + tail + '?' + query;
   }
 
   // Разбор location.hash в то же состояние — используется только при самой
   // первой загрузке страницы (см. boot()), чтобы F5 на "Отчётах" вернул тот
   // же экран/фильтр, а не всегда стартовый "Обзор" с фильтром по умолчанию.
   function parseReportsHash(hash) {
-    var m = /^#\/reports\/([a-z]+)\?(.*)$/.exec(hash || '');
+    var m = /^#\/reports\/([a-z]+)(?:\/import\/([0-9a-fA-F-]+))?\?(.*)$/.exec(hash || '');
     if (!m || REPORTS_BUILT_VIEWS.indexOf(m[1]) < 0) return null;
     var params = {};
-    m[2].split('&').forEach(function (pair) {
+    m[3].split('&').forEach(function (pair) {
       var kv = pair.split('=');
       if (kv[0]) params[kv[0]] = decodeURIComponent(kv[1] || '');
     });
@@ -6561,6 +8054,7 @@
       periodTo: params.to,
       eqCurrency: params.eq || 'USD',
       cmpMode: params.cmp || 'none',
+      aiImport: m[1] === 'ai' && m[2] ? m[2] : '',
     };
   }
 
@@ -6603,6 +8097,9 @@
     // Восстановление — не новый переход, а возврат к уже существовавшей
     // записи истории: switchReportsView не должен пушить её ещё раз поверх
     // самой себя.
+    // Список импортов или экран проверки — до переключения: если статус ИИ
+    // ещё не пришёл (F5), refreshAiStatus откроет тот же экран позже.
+    if (state.view === 'ai') stShowImport(state.aiImport || null);
     isApplyingHistoryState = true;
     switchReportsView(state.view);
     isApplyingHistoryState = false;
@@ -6675,6 +8172,7 @@
       aiCancelParsing();
       renderAiRoot();
     }
+    var enteringAi = view === 'ai' && reportsView !== 'ai';
     reportsView = view;
     REPORTS_BUILT_VIEWS.forEach(function (v) {
       document.getElementById('view-' + v).hidden = v !== view;
@@ -6699,6 +8197,10 @@
     // вкладка была скрыта (hidden -> display:none), ширина читалась бы как 0.
     // Пересчитываем именно в момент, когда контейнер становится видимым.
     if (view === 'struct') renderTreemapIfVisible();
+    // Импорты: зашли на "ИИ" — список сразу свежий и опрос раз в 5 с, ушли —
+    // опрос реже (только ради метки), см. stSchedulePoll.
+    if (enteringAi) stLoadImports();
+    else stSchedulePoll();
     // Каждое переключение вкладки — запись в браузерной истории (см.
     // isApplyingHistoryState выше), КРОМЕ восстановления уже существующей
     // записи (иначе "Назад" сам себя тут же запушил бы вперёд повторно).
@@ -7153,6 +8655,7 @@
       '</div>' +
       '<div id="view-ai" hidden>' +
       '<div id="ai-root"></div>' +
+      '<div id="st-root"></div>' +
       '</div>' +
       '</div>' +
       '</main>' +
