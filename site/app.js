@@ -1033,7 +1033,7 @@
     var listEl = document.getElementById('settings-currency-picker-list');
     if (!listEl) return;
     var current = settingsCurrencyValue();
-    listEl.innerHTML = currencyDirectory
+    listEl.innerHTML = eqPickerCurrencies(current) // то же правило, что у пикера "Отчётов"
       .map(function (c) { return currencyRowHtml(c, c.iso_code === current); })
       .join('');
   }
@@ -1534,11 +1534,27 @@
     );
   }
 
+  // Валюты для пикеров эквивалента ("Отчёты", "Настройки") и автовыбора в
+  // loadCurrencies (currency-ui-tweaks, design D1) — правило в одном месте:
+  // только show_in_equivalent (нет поля — старый wallet-report — значит
+  // true, D6) плюс текущая, даже если её скрыли (отчёты не перескакивают
+  // молча в другую валюту); флаг снят у всех — весь справочник. Пикеры
+  // формы "Добавить пару" флаг не учитывают (там справочник целиком).
+  function eqPickerCurrencies(currentIso) {
+    var anyShown = false;
+    var list = currencyDirectory.filter(function (c) {
+      var shown = c.show_in_equivalent !== false;
+      if (shown) anyShown = true;
+      return shown || c.iso_code === currentIso;
+    });
+    return anyShown ? list : currencyDirectory.slice();
+  }
+
   function renderCurrencyPickerList() {
     var listEl = document.getElementById('currency-picker-list');
     if (!listEl) return;
     var current = eqCurrencyValue();
-    listEl.innerHTML = currencyDirectory
+    listEl.innerHTML = eqPickerCurrencies(current)
       .map(function (c) { return currencyRowHtml(c, c.iso_code === current); })
       .join('');
   }
@@ -1626,7 +1642,7 @@
   // renderReports) — с ним отчёты открываются сразу, кнопка пикера при этом
   // показывает пустой флаг-заглушку (currencyDirectory ещё пуст).
   function loadCurrencies() {
-    fetchReport('currencies', {})
+    return fetchReport('currencies', {}) // promise — для reloadCurrencyDirectory ниже; renderReports его не ждёт
       .then(function (data) {
         // Пустой справочник (леджера нет вовсе и ни одной ОБЩЕЙ валюты в
         // схеме — см. README wallet-api) — не заменять список валют
@@ -1640,18 +1656,34 @@
         var current = eqCurrencyValue();
         renderCurrencyPickerList();
         renderCurrencyPickerButton();
+        renderSettingsCurrencyPickerList(); // перезапрос после записи валюты (D3) — оба пикера; вне своего экрана — no-op
+        renderSettingsCurrencyPickerButton();
         // Заглушка "USD" могла не совпасть ни с одной реальной валютой этого
         // леджера (у него может не быть USD вовсе) — тогда молча остались бы
         // висеть под несуществующей валютой. Вместо этого явно берём первую
-        // валюту справочника (ORDER BY iso_code на сервере, см.
-        // reports_repo.hpp) и перезапрашиваем период под неё — иначе KPI на
-        // "Обзоре" продолжали бы грузиться под "USD" и, если её правда нет,
-        // падать 400 "неизвестный ISO-код".
+        // валюту СПИСКА ПИКЕРА (справочник ORDER BY iso_code на сервере, см.
+        // reports_repo.hpp, без скрытых из эквивалента — eqPickerCurrencies)
+        // и перезапрашиваем период под неё — иначе KPI на "Обзоре"
+        // продолжали бы грузиться под "USD" и, если её правда нет, падать
+        // 400 "неизвестный ISO-код".
         if (isoList.length && isoList.indexOf(current) < 0) {
-          selectCurrency(isoList[0]); // сам зовёт renderCurrencyPickerButton()+refreshPeriod()
+          selectCurrency(eqPickerCurrencies(null)[0].iso_code); // сам зовёт renderCurrencyPickerButton()+refreshPeriod()
         }
       })
       .catch(function () { /* справочник недоступен — молча остаёмся со значением по умолчанию */ });
+  }
+
+  // Перезапрос справочника после записи валюты (POST/PATCH/DELETE
+  // /api/currencies*, design D3): сбросить его ключ в reportsCache (с
+  // as_user_id или без — все варианты) и загрузить заново тем же
+  // loadCurrencies(). Ответ записи несёт готовую строку, но перезапрос
+  // заодно подтягивает правки с телефона и не дублирует на клиенте правило
+  // wallet-report "своя валюта перекрывает общую".
+  function reloadCurrencyDirectory() {
+    Object.keys(reportsCache).forEach(function (k) {
+      if (k.indexOf('currencies?') === 0) delete reportsCache[k];
+    });
+    return loadCurrencies();
   }
 
   function addDays(date, days) {
