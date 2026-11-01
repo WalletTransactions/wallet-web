@@ -126,6 +126,9 @@ table.users .btn-view-as {
 /* Строка "своего" устройства на экране "Устройства" (app.js::renderDevices)
    — тот же тинт, что у hover выше, только постоянный, не по наведению. */
 tr.device-current { background: var(--sand2); }
+/* "Использовался …"/"Действует до …" под меткой в колонке "Статус"
+   (app.js::deviceRowHtml) — мелким вторичным текстом, как .sub-id. */
+.device-when { color: var(--ink4); font-size: 12px; line-height: 1.4; margin-top: 2px; }
 
 /* Специфика SPA (wallet-web) — раньше этих классов не было ни у кого,
    тут впервые (форма создания кошелька, список созданных за сессию). */
