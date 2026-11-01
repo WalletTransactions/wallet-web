@@ -1658,6 +1658,7 @@
         renderCurrencyPickerButton();
         renderSettingsCurrencyPickerList(); // перезапрос после записи валюты (D3) — оба пикера; вне своего экрана — no-op
         renderSettingsCurrencyPickerButton();
+        curCurrencyFormCapture(); // открытая форма валюты не теряет набранное при перерисовке
         renderCurCurrencies(); // таблица "Валюты" могла открыться раньше, чем пришёл справочник
         // Заглушка "USD" могла не совпасть ни с одной реальной валютой этого
         // леджера (у него может не быть USD вовсе) — тогда молча остались бы
