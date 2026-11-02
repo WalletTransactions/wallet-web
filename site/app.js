@@ -345,7 +345,7 @@
       '<h1>Пользователи</h1>' +
       '<p class="sub">Всего: ' + users.length + '. Клик по заголовку столбца сортирует таблицу.</p>' +
       '<label class="users-sort-mobile">Сортировать: <select id="users-sort">' + sortOptions + '</select></label>' +
-      '<div class="users-table-wrap">' +
+      '<div class="users-table-wrap users-cards-wrap">' +
       '<table class="users" id="users-table">' +
       '<thead><tr>' + headers + '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +

@@ -1123,7 +1123,10 @@ tr.device-current { background: var(--sand2); }
 @media (max-width: 720px) {
   .users-sort-mobile { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--ink4); font-weight: 600; }
   .users-sort-mobile select { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--l14); border-radius: 10px; background: var(--surf); font: inherit; color: var(--ink); }
-  .users-table-wrap { overflow-x: visible; }
+  /* Только у таблицы пользователей (она становится карточками) — остальные
+     .users-table-wrap (пары валют, история курса, устройства, валюты)
+     прокручиваются внутри обёртки, иначе раздвигают страницу (wallet-web#15). */
+  .users-cards-wrap { overflow-x: visible; }
   #users-table, #users-table tbody { display: block; }
   #users-table thead { display: none; }
   #users-table tr {
@@ -1284,9 +1287,6 @@ tr.device-current { background: var(--sand2); }
   .move-row { grid-template-columns: 26px 1fr auto; }
 
   .cur-controls-row input, .cur-add-form input, .cur-add-form select { flex: 1 1 140px; min-width: 0; font-size: 16px; }
-  /* Таблица валют (5 колонок) — прокрутка внутри обёртки, а не всей
-     страницы: общее правило выше снимает её у .users-table-wrap. */
-  .users-table-wrap.cur-currencies-wrap { overflow-x: auto; }
   .cur-field { flex: 1 1 140px; min-width: 0; }
   .cur-field input, .cur-field input[type="number"] { width: 100%; font-size: 16px; }
   .access-ttl-row { flex-wrap: wrap; }
