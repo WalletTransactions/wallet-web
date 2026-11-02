@@ -27,8 +27,7 @@
 - `#wallet-kpis` — сетка в 3 колонки (`style.css`), на ≤900px — 2.
 - В репе есть незавершённые changes, которые тоже правят `app.js`:
   `currency-ui-tweaks` (пикер валюты эквивалента), `server-managed-icons`,
-  `add-mcp-tokens-ui` («Настройки»), а `admin-nav-section` — пустая заготовка,
-  которая, судя по названию, будет перестраивать группы сайдбара.
+  `add-mcp-tokens-ui` («Настройки»), `icons-tab-management` (вкладка «Иконки»).
 
 ## Goals / Non-Goals
 
@@ -109,7 +108,7 @@ wallet-report (SQL-функции и `account_asset` — его парный cha
   2 + 2 + 1] → допустимо. Альтернатива с шестой плиткой ради ровной сетки
   добавила бы шум.
 - [Конфликты правок `app.js` с `currency-ui-tweaks`, `server-managed-icons`,
-  `add-mcp-tokens-ui`; `admin-nav-section` может перестроить группу «Кошелёк»] →
+  `add-mcp-tokens-ui`, `icons-tab-management`] →
   правки локальны (хелперы ленты, функции «Кошельков», новый раздел). Пункт
   «Капитал» всегда ставится рядом с «Кошельки и остатки», в какой бы группе тот ни
   оказался.
