@@ -24,8 +24,9 @@ drag-and-drop и пакетная загрузка.
 
 ## Decisions
 
-1. **Обработка картинки в браузере через `<canvas>`**: `FileReader` →
-   `Image` → квадратная обрезка по центру в canvas 256×256 →
+1. **Обработка картинки в браузере через `<canvas>`**: objectURL файла
+   (`URL.createObjectURL`, не `FileReader`/dataURL — фото в 10+ МБ не
+   раздувается в base64-строку) → `Image` → квадратная обрезка по центру в canvas 256×256 →
    `canvas.toBlob(cb, 'image/webp', 0.9)`; если `blob.type !== 'image/webp'`
    (Safari отдаёт PNG) — используем что вернулось (PNG). Альтернатива —
    слать оригинал и сжимать на сервере: wallet-api пришлось бы тянуть
