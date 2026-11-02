@@ -1104,9 +1104,9 @@
     box.innerHTML =
       '<div class="mcp-token-shown">' +
       '<h3>Токен для «' + escapeHtml(data.name || '') + '»</h3>' +
-      '<p class="mcp-token-warn">Скопируйте токен сейчас — больше он показан не будет. Действует до ' +
+      '<p class="mcp-token-warn">Скопируйте токен сейчас — больше он показан не будет. Отключится ' +
       escapeHtml(formatLocalDateTime(data.expires_at, false)) +
-      '; если клиент не обращается к кошельку 30 дней, токен отключится раньше.</p>' +
+      ', если клиент не будет обращаться к кошельку; каждое обращение продлевает срок, но не дольше 90 дней с выпуска.</p>' +
       '<label class="mcp-field"><span>Токен</span>' +
       '<textarea readonly rows="2" class="mcp-token-value" id="mcp-token-value" spellcheck="false"></textarea></label>' +
       '<div class="mcp-copy-row">' +
