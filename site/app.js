@@ -507,12 +507,18 @@
   // Иконки крупнее, чем в самих отчётах (.cat-icon, 26px) — здесь это не
   // подпись к операции среди текста, а единственное содержимое экрана,
   // "витрина" для просмотра/сверки, крупная картинка полезнее компактной.
-  function iconGridHtml(icons) {
+  // opts.editable (только общий набор на админском экране, server-managed-icons)
+  // — у ячейки data-uuid/data-name и кнопки «Переименовать»/«Удалить»;
+  // обработчики — делегированием (wireAdminCommonIconsEvents). Иконки
+  // пользователя и вкладка «Иконки» в «Отчётах» зовут без opts — только просмотр.
+  function iconGridHtml(icons, opts) {
     if (icons.length === 0) return '<p class="wallet-empty">Иконок нет.</p>';
+    var editable = !!(opts && opts.editable);
     return (
-      '<div class="icon-admin-grid">' +
+      '<div class="icon-admin-grid' + (editable ? ' editable' : '') + '">' +
       icons
         .map(function (i) {
+          if (editable) return adminCommonIconCellHtml(i);
           return (
             '<div class="icon-admin-cell">' +
             categoryIconHtml(i.sha256, 'icon-admin-cat-icon') +
@@ -525,6 +531,325 @@
     );
   }
 
+  // ---------- Общие иконки: запись (server-managed-icons) ----------
+  // Набор ведёт администратор здесь; телефоны его только скачивают
+  // (GET /sync/pull, поток справочников). Ручки — wallet-api,
+  // /api/admin/icons* (тег admin-icons его openapi.yaml), байты картинки —
+  // заранее через POST /sync/blobs. Просмотр (GET /api/reports/admin/icons)
+  // — по-прежнему wallet-report.
+  var ICON_SIZE = 256; // как хранит телефон (WEBP 256×256, BitmapFactory)
+  var ICON_DUP_NAME = 'Общая иконка с таким названием уже есть.';
+
+  // Состояние формы «Добавить иконку»: подготовленная картинка выбранного
+  // файла. iconAddPrepared — Promise<Blob> (reject — не картинка),
+  // iconAddPreviewUrl — objectURL превью (отзывается при смене/очистке).
+  var iconAddPrepared = null;
+  var iconAddPreviewUrl = null;
+
+  function adminCommonIconCellHtml(i) {
+    return (
+      '<div class="icon-admin-cell" data-uuid="' + escapeAttr(i.uuid) + '" data-name="' + escapeAttr(i.name) + '">' +
+      categoryIconHtml(i.sha256, 'icon-admin-cat-icon') +
+      '<div class="icon-admin-name">' + escapeHtml(i.name) + '</div>' +
+      '<div class="icon-admin-actions">' +
+      '<button type="button" class="icon-admin-act" data-act="rename">Переименовать</button>' +
+      '<button type="button" class="icon-admin-act danger" data-act="delete">Удалить</button>' +
+      '</div>' +
+      '<p class="icon-admin-err"></p>' +
+      '</div>'
+    );
+  }
+
+  function iconAddFormHtml() {
+    return (
+      '<form class="icon-add-form" id="icon-add-form" novalidate>' +
+      '<h3>Добавить иконку</h3>' +
+      '<div class="icon-add-row">' +
+      '<div class="icon-add-preview" id="icon-add-preview"></div>' +
+      '<label class="cur-field icon-add-file">Картинка<input type="file" id="icon-add-file" accept="image/*"></label>' +
+      '<label class="cur-field">Название<input type="text" id="icon-add-name" maxlength="64" autocomplete="off"></label>' +
+      '<label class="cur-field">Тип<select id="icon-add-type">' +
+      '<option value="0">Категория</option><option value="1">Флаг</option>' +
+      '</select></label>' +
+      '<button type="submit" class="btn" id="icon-add-btn">Добавить</button>' +
+      '</div>' +
+      '<p class="err icon-add-err" id="icon-add-err"></p>' +
+      '</form>'
+    );
+  }
+
+  // Картинка → квадрат ICON_SIZE×ICON_SIZE: обрезка по центру, WEBP 0.9;
+  // браузер без WEBP-кодировщика (Safari) отдаёт из toBlob PNG — берём
+  // что вернулось. Наружу уходит только результат, не исходный файл.
+  // objectURL, а не FileReader/dataURL: фото с телефона в 10+ МБ не
+  // раздувается в base64-строку в памяти. reject — файл не декодируется.
+  function prepareIconImage(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var canvas = document.createElement('canvas');
+        canvas.width = ICON_SIZE;
+        canvas.height = ICON_SIZE;
+        var ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        try {
+          if (w > 0 && h > 0) {
+            var s = Math.min(w, h);
+            ctx.drawImage(img, (w - s) / 2, (h - s) / 2, s, s, 0, 0, ICON_SIZE, ICON_SIZE);
+          } else {
+            ctx.drawImage(img, 0, 0, ICON_SIZE, ICON_SIZE); // SVG без собственного размера
+          }
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        canvas.toBlob(function (blob) {
+          if (blob) resolve(blob);
+          else reject(new Error('canvas.toBlob'));
+        }, 'image/webp', 0.9);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        reject(new Error('not an image'));
+      };
+      img.src = url;
+    });
+  }
+
+  // Вызов wallet-api для формы/кнопок: 401 — экран входа (null), 204 — {},
+  // иначе Error со status и телом (in_use у 409 удаления). Тело ошибки может
+  // быть не JSON (HTML 502 от гейтвея) — тогда причина «HTTP <код>».
+  function adminIconsApi(method, url, body, contentType) {
+    var options = { method: method, credentials: 'include' };
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': contentType || 'application/json' };
+      options.body = contentType ? body : JSON.stringify(body);
+    }
+    return apiFetch(url, options).then(function (res) {
+      if (res.status === 401) {
+        renderLogin();
+        return null;
+      }
+      if (res.status === 204) return {};
+      return res.json().catch(function () { return null; }).then(function (data) {
+        if (!res.ok) {
+          var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          err.status = res.status;
+          err.body = data || {};
+          throw err;
+        }
+        return data || {};
+      });
+    });
+  }
+
+  // Перерисовка ТОЛЬКО раздела «Общие» (#admin-icons-common) — выбранный
+  // пользователь в нижнем разделе и форма «Добавить иконку» не сбрасываются.
+  // Старая сетка остаётся на экране, пока не придёт новая.
+  function refreshAdminCommonIcons() {
+    return apiJson('/api/reports/admin/icons', { credentials: 'include' })
+      .then(function (data) {
+        if (!data) return; // 401 — apiJson уже вызвал renderLogin()
+        var el = document.getElementById('admin-icons-common');
+        if (el) el.innerHTML = iconGridHtml(data.common, { editable: true });
+      })
+      .catch(function (err) {
+        var el = document.getElementById('admin-icons-common');
+        if (el) el.innerHTML = '<p class="err">Не удалось загрузить: ' + escapeHtml(err.message) + '</p>';
+      });
+  }
+
+  function setIconAddPreview(blob) {
+    var el = document.getElementById('icon-add-preview');
+    if (iconAddPreviewUrl) URL.revokeObjectURL(iconAddPreviewUrl);
+    iconAddPreviewUrl = blob ? URL.createObjectURL(blob) : null;
+    if (el) el.style.backgroundImage = iconAddPreviewUrl ? 'url("' + iconAddPreviewUrl + '")' : '';
+  }
+
+  function wireIconAddForm() {
+    var form = document.getElementById('icon-add-form');
+    var fileInput = document.getElementById('icon-add-file');
+    var nameInput = document.getElementById('icon-add-name');
+    var typeSelect = document.getElementById('icon-add-type');
+    var btn = document.getElementById('icon-add-btn');
+    var errEl = document.getElementById('icon-add-err');
+    iconAddPrepared = null;
+    setIconAddPreview(null);
+
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      errEl.textContent = '';
+      setIconAddPreview(null);
+      if (!file) {
+        iconAddPrepared = null;
+        return;
+      }
+      var prepared = prepareIconImage(file);
+      iconAddPrepared = prepared;
+      prepared.then(
+        function (blob) { if (iconAddPrepared === prepared) setIconAddPreview(blob); },
+        function () { if (iconAddPrepared === prepared) errEl.textContent = 'Не удалось прочитать картинку.'; }
+      );
+    });
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (btn.disabled) return;
+      var name = nameInput.value.trim();
+      var prepared = iconAddPrepared;
+      if (!prepared || !name) {
+        errEl.textContent = 'Выберите картинку и введите название.';
+        return;
+      }
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Добавление…';
+      function done() {
+        btn.disabled = false;
+        btn.textContent = 'Добавить';
+      }
+
+      prepared
+        .catch(function () {
+          var e = new Error('Не удалось прочитать картинку.');
+          e.local = true;
+          throw e;
+        })
+        .then(function (blob) {
+          return adminIconsApi('POST', '/sync/blobs', blob, 'application/octet-stream');
+        })
+        .then(function (blobData) {
+          if (!blobData) return null; // 401
+          return adminIconsApi('POST', '/api/admin/icons', {
+            name: name,
+            icon_type: Number(typeSelect.value),
+            content_sha256: blobData.sha256,
+          });
+        })
+        .then(function (created) {
+          done();
+          if (!created) return; // 401 — экран входа уже показан
+          form.reset();
+          iconAddPrepared = null;
+          setIconAddPreview(null);
+          return refreshAdminCommonIcons();
+        })
+        .catch(function (err) {
+          done();
+          if (err.local) errEl.textContent = err.message;
+          else if (err.status === 409) errEl.textContent = ICON_DUP_NAME;
+          else errEl.textContent = 'Не удалось: ' + err.message;
+        });
+    });
+  }
+
+  function adminIconCellError(cell, text) {
+    var el = cell.querySelector('.icon-admin-err');
+    if (el) el.textContent = text;
+  }
+
+  function startAdminIconRename(cell) {
+    if (cell.classList.contains('editing')) return;
+    cell.classList.add('editing');
+    adminIconCellError(cell, '');
+    var nameEl = cell.querySelector('.icon-admin-name');
+    var actions = cell.querySelector('.icon-admin-actions');
+    nameEl.innerHTML = '<input type="text" class="icon-admin-rename-input" maxlength="64" value="' +
+      escapeAttr(cell.getAttribute('data-name')) + '">';
+    actions.innerHTML =
+      '<button type="button" class="icon-admin-act" data-act="save">Сохранить</button>' +
+      '<button type="button" class="icon-admin-act" data-act="cancel">Отмена</button>';
+    var input = nameEl.querySelector('input');
+    input.focus();
+    input.select();
+  }
+
+  function cancelAdminIconRename(cell) {
+    cell.classList.remove('editing');
+    adminIconCellError(cell, '');
+    cell.querySelector('.icon-admin-name').textContent = cell.getAttribute('data-name');
+    cell.querySelector('.icon-admin-actions').innerHTML =
+      '<button type="button" class="icon-admin-act" data-act="rename">Переименовать</button>' +
+      '<button type="button" class="icon-admin-act danger" data-act="delete">Удалить</button>';
+  }
+
+  function saveAdminIconRename(cell) {
+    var input = cell.querySelector('.icon-admin-rename-input');
+    var name = input.value.trim();
+    if (name === cell.getAttribute('data-name')) {
+      cancelAdminIconRename(cell);
+      return;
+    }
+    var buttons = cell.querySelectorAll('.icon-admin-act');
+    function setBusy(busy) {
+      Array.prototype.forEach.call(buttons, function (b) { b.disabled = busy; });
+    }
+    adminIconCellError(cell, '');
+    setBusy(true);
+    adminIconsApi('PATCH', '/api/admin/icons/' + encodeURIComponent(cell.getAttribute('data-uuid')), { name: name })
+      .then(function (data) {
+        if (!data) return; // 401
+        return refreshAdminCommonIcons();
+      })
+      .catch(function (err) {
+        setBusy(false);
+        adminIconCellError(cell, err.status === 409 ? ICON_DUP_NAME : 'Не удалось: ' + err.message);
+        input.focus();
+      });
+  }
+
+  function deleteAdminIcon(cell, btn) {
+    var name = cell.getAttribute('data-name');
+    if (!window.confirm('Удалить общую иконку «' + name + '»? Она пропадёт с телефонов при синхронизации.')) return;
+    adminIconCellError(cell, '');
+    btn.disabled = true;
+    adminIconsApi('DELETE', '/api/admin/icons/' + encodeURIComponent(cell.getAttribute('data-uuid')))
+      .then(function (data) {
+        if (!data) return; // 401
+        return refreshAdminCommonIcons();
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        if (err.status === 409) {
+          var n = err.body && err.body.in_use != null ? ' (' + err.body.in_use + ')' : '';
+          adminIconCellError(cell, 'Иконка используется' + n + ' — удалить нельзя.');
+        } else {
+          adminIconCellError(cell, 'Не удалось: ' + err.message);
+        }
+      });
+  }
+
+  // Один раз на контейнер #admin-icons-common: его содержимое
+  // (refreshAdminCommonIcons) меняется, сам элемент — нет.
+  function wireAdminCommonIconsEvents() {
+    var root = document.getElementById('admin-icons-common');
+    root.addEventListener('click', function (ev) {
+      var btn = ev.target.closest ? ev.target.closest('.icon-admin-act') : null;
+      if (!btn || btn.disabled) return;
+      var cell = btn.closest('.icon-admin-cell');
+      var act = btn.getAttribute('data-act');
+      if (act === 'rename') startAdminIconRename(cell);
+      else if (act === 'cancel') cancelAdminIconRename(cell);
+      else if (act === 'save') saveAdminIconRename(cell);
+      else if (act === 'delete') deleteAdminIcon(cell, btn);
+    });
+    root.addEventListener('keydown', function (ev) {
+      if (!ev.target.classList || !ev.target.classList.contains('icon-admin-rename-input')) return;
+      var cell = ev.target.closest('.icon-admin-cell');
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        var save = cell.querySelector('[data-act="save"]');
+        if (save && !save.disabled) saveAdminIconRename(cell);
+      } else if (ev.key === 'Escape') {
+        cancelAdminIconRename(cell);
+      }
+    });
+  }
+
   function renderAdminIconsScreen(commonIcons, users) {
     setWide(true);
     var userOptions = users
@@ -533,10 +858,12 @@
 
     app.innerHTML =
       '<h1>Иконки</h1>' +
-      '<p class="sub">Общий набор виден всем кошелькам. Выберите пользователя, чтобы ' +
-      'посмотреть его собственные иконки (добавленные им самим из галереи).</p>' +
+      '<p class="sub">Общий набор виден всем кошелькам и приезжает на телефоны при синхронизации. ' +
+      'Выберите пользователя, чтобы посмотреть его собственные иконки (добавленные им самим ' +
+      'из галереи, на сервер они не отправляются).</p>' +
       '<h2>Общие</h2>' +
-      iconGridHtml(commonIcons) +
+      iconAddFormHtml() +
+      '<div id="admin-icons-common">' + iconGridHtml(commonIcons, { editable: true }) + '</div>' +
       '<h2>Иконки пользователя</h2>' +
       '<div class="reports-controls">' +
       '<select id="admin-icons-user-select">' +
@@ -548,6 +875,8 @@
       '<button type="button" class="btn btn-secondary" id="admin-icons-back-btn">Назад</button>';
 
     document.getElementById('admin-icons-back-btn').addEventListener('click', renderAdmin);
+    wireIconAddForm();
+    wireAdminCommonIconsEvents();
 
     document.getElementById('admin-icons-user-select').addEventListener('change', function (ev) {
       var userId = ev.target.value;
