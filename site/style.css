@@ -126,6 +126,65 @@ table.users .btn-view-as {
 /* Строка "своего" устройства на экране "Устройства" (app.js::renderDevices)
    — тот же тинт, что у hover выше, только постоянный, не по наведению. */
 tr.device-current { background: var(--sand2); }
+/* "Использовался …"/"Действует до …" под меткой в колонке "Статус"
+   (app.js::deviceRowHtml) — мелким вторичным текстом, как .sub-id. */
+.device-when { color: var(--ink4); font-size: 12px; line-height: 1.4; margin-top: 2px; }
+
+/* "Подключить MCP-клиент" (app.js::renderMcpTokenBox/showMcpToken) — форма
+   и одноразовый показ токена блоком в потоке над таблицей устройств, той же
+   поверхностью, что карточки "Доступа". Поля — как .ai-input textarea. */
+#mcp-token-box { margin-bottom: 12px; }
+.mcp-connect-btn { margin: 0 0 4px; }
+.mcp-token-form, .mcp-token-shown {
+  background: var(--surf); border-radius: 18px; box-shadow: var(--sh); padding: 18px 20px; max-width: 640px;
+}
+/* text-transform/letter-spacing сброшены: .report-section h3 — капсом, а имя токена нужно видеть как набрано. */
+#mcp-token-box .mcp-token-shown h3 { font-family: var(--font-display); font-size: 16px; margin: 0 0 8px; color: var(--ink); text-transform: none; letter-spacing: 0; }
+.mcp-token-warn { background: var(--exp-tint); color: var(--exp); border-radius: 12px; padding: 10px 14px; font-size: 13.5px; line-height: 1.5; margin: 0 0 14px; }
+.mcp-field { display: block; margin: 0 0 6px; }
+.mcp-field > span { display: block; font-size: 12px; font-weight: 600; color: var(--ink4); margin-bottom: 4px; }
+.mcp-field input, .mcp-field textarea {
+  width: 100%; box-sizing: border-box; padding: 10px 14px; border: 1.5px solid var(--l14); border-radius: 14px;
+  background: var(--bg); color: var(--ink); font-family: inherit; font-size: 14px; outline: none;
+}
+.mcp-field input:focus, .mcp-field textarea:focus { border-color: var(--acc); }
+.mcp-field textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.45; }
+.mcp-token-value { word-break: break-all; }
+.mcp-config-value { white-space: pre; overflow-x: auto; }
+.mcp-hint-err { color: var(--exp); font-size: 13px; margin: 2px 0 8px; line-height: 1.4; }
+.mcp-hint-err:empty { display: none; }
+.mcp-copy-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.mcp-copy-row .btn { margin: 0; padding: 7px 16px; }
+.mcp-copy-hint { font-size: 13px; color: var(--ink3); }
+.mcp-token-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.mcp-token-buttons .btn { margin: 0; }
+.mcp-token-buttons .btn:disabled { opacity: .45; cursor: default; }
+@media (max-width: 700px) {
+  .mcp-token-form, .mcp-token-shown { padding: 14px; }
+  .mcp-field input, .mcp-field textarea { font-size: 16px; } /* 16px — иначе iOS зумит при фокусе (и при select() «Скопировать») */
+  .mcp-config-value { white-space: pre-wrap; word-break: break-all; min-height: 22em; } /* перенос только визуальный — value и копия не меняются */
+  .mcp-token-buttons, .mcp-copy-row { flex-direction: column; align-items: stretch; }
+  .mcp-token-buttons .btn, .mcp-copy-row .btn { width: 100%; text-align: center; }
+  .mcp-connect-btn { width: 100%; }
+}
+/* Таблица устройств на телефоне — строка-карточка: слева имя, платформа и
+   статус со сроками в столбик, справа «Отозвать». Четыре колонки с
+   заголовками не влезали в ~315px карточки «Настроек» ещё до MCP (страница
+   уезжала вбок на ~25px), а строки «Использовался …» сделали бы хуже. */
+@media (max-width: 720px) {
+  #devices-table, #devices-table tbody { display: block; }
+  #devices-table thead { display: none; }
+  #devices-table tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px;
+    padding: 12px 10px; border-bottom: 1px solid var(--l10);
+  }
+  #devices-table td { display: block; padding: 0; border: none; min-width: 0; overflow-wrap: anywhere; }
+  #devices-table td:nth-child(1) { grid-column: 1; font-weight: 600; color: var(--ink); }
+  #devices-table td:nth-child(2) { grid-column: 1; font-size: 13px; color: var(--ink4); }
+  #devices-table td:nth-child(3) { grid-column: 1; }
+  #devices-table td:nth-child(3) .badge { margin-top: 4px; }
+  #devices-table td:nth-child(4) { grid-column: 2; grid-row: 1 / span 3; align-self: center; text-align: right; max-width: 110px; }
+}
 
 /* Специфика SPA (wallet-web) — раньше этих классов не было ни у кого,
    тут впервые (форма создания кошелька, список созданных за сессию). */

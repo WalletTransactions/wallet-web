@@ -74,6 +74,12 @@
     return div.innerHTML;
   }
 
+  // escapeHtml не трогает кавычки — для значения атрибута в "…", куда идёт
+  // текст, набранный пользователем (имя MCP-токена в data-name).
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/"/g, '&quot;');
+  }
+
   // .card.wide — существовавший, но раньше нигде не применявшийся класс в
   // style.css (max-width 900px вместо обычных 460 — для таблиц). Экраны с
   // таблицей (список пользователей, отчёты) включают его, обычные узкие
@@ -614,7 +620,7 @@
         renderSettingsDevicesTable(data.devices);
       })
       .catch(function (err) {
-        var container = document.getElementById('settings-devices');
+        var container = document.getElementById('settings-devices-table');
         if (container) container.innerHTML = reportsErrorHtml('Не удалось загрузить список устройств: ' + err.message);
       });
   }
@@ -831,14 +837,25 @@
       });
   }
 
+  // MCP-токены (google-auth add-mcp-personal-tokens) — те же сессии
+  // устройств, platform "mcp", device_name — имя токена. last_used_at/
+  // expires_at google-auth отдаёт для всех сессий (null — неизвестно), здесь
+  // они под меткой в "Статусе", в местном поясе (formatLocalDateTime).
   function deviceRowHtml(d) {
     var name = d.device_name ? escapeHtml(d.device_name) : (d.platform ? '(без имени)' : 'Браузер');
-    var platform = d.platform ? escapeHtml(d.platform) : '—';
+    var platform = d.platform === 'mcp' ? 'MCP-клиент' : (d.platform ? escapeHtml(d.platform) : '—');
     var status = d.is_current ? '<span class="badge ok">Текущее</span>' : '';
+    if (d.last_used_at) {
+      status += '<div class="device-when">Использовался ' + escapeHtml(formatLocalDateTime(d.last_used_at, true)) + '</div>';
+    }
+    if (d.expires_at) {
+      status += '<div class="device-when">Действует до ' + escapeHtml(formatLocalDateTime(d.expires_at, false)) + '</div>';
+    }
     var action = d.is_current
       ? '<span class="sub-id">выйдите через «Выйти»</span>'
       : '<button type="button" class="btn-force-logout" data-token-hash="' +
-        escapeHtml(d.token_hash) + '">Отозвать</button>';
+        escapeHtml(d.token_hash) + '" data-platform="' + escapeHtml(d.platform || '') +
+        '" data-name="' + escapeAttr(d.device_name || '') + '">Отозвать</button>';
     return (
       '<tr' + (d.is_current ? ' class="device-current"' : '') + '>' +
       '<td>' + name + '</td>' +
@@ -849,8 +866,11 @@
     );
   }
 
+  // Рисует в #settings-devices-table, не в #settings-devices целиком: рядом
+  // живёт #mcp-token-box (форма/показ MCP-токена), и перечитывание списка
+  // (после отзыва, после «Готово») не должно стирать открытую форму.
   function renderSettingsDevicesTable(deviceList) {
-    var container = document.getElementById('settings-devices');
+    var container = document.getElementById('settings-devices-table');
     if (!container) return; // ушли с "Настроек" раньше, чем пришёл ответ
     var rows = deviceList.map(deviceRowHtml).join('');
     var othersCount = deviceList.filter(function (d) { return !d.is_current; }).length;
@@ -885,9 +905,15 @@
       if (!btn) return;
       var tokenHash = btn.getAttribute('data-token-hash');
 
-      if (!window.confirm('Отозвать эту сессию? Устройство перестанет продлевать вход ' +
+      // MCP: "5 минут" — срок JWT обмена (exp = 300 с, google-auth
+      // add-mcp-personal-tokens), который wallet-mcp кеширует до exp.
+      var question = btn.getAttribute('data-platform') === 'mcp'
+        ? 'Отозвать MCP-токен «' + (btn.getAttribute('data-name') || '(без имени)') + '»? ' +
+          'Клиент потеряет доступ к кошельку в течение 5 минут.'
+        : 'Отозвать эту сессию? Устройство перестанет продлевать вход ' +
           'на нём, а его текущий доступ к этому сайту прервётся сразу — но доступ к ' +
-          'кошелькам/отчётам ещё до 15 минут (см. README google-auth).')) {
+          'кошелькам/отчётам ещё до 15 минут (см. README google-auth).';
+      if (!window.confirm(question)) {
         return;
       }
 
@@ -922,7 +948,8 @@
   function wireRevokeOthers() {
     var btn = document.getElementById('devices-revoke-others-btn');
     if (!window.confirm('Закрыть все остальные сессии? Все устройства, кроме этого, ' +
-        'перестанут продлевать вход.')) {
+        'перестанут продлевать вход, а MCP-клиенты (например, LM Studio) потеряют ' +
+        'доступ к кошельку.')) {
       return;
     }
 
@@ -946,6 +973,192 @@
         btn.disabled = false;
         window.alert('Не удалось закрыть остальные сессии: ' + err.message);
       });
+  }
+
+  // "Подключить MCP-клиент" (add-mcp-tokens-ui) — POST /auth/mcp-tokens
+  // (google-auth add-mcp-personal-tokens, см. его openapi.yaml). Блок в
+  // потоке #mcp-token-box в начале #settings-devices, по образцу
+  // telegram-link-box, без модалки. Режим — null (кнопка) / 'form' / 'shown'.
+  //
+  // Сам токен НЕ хранится в переменных замыкания: он приходит в ответе,
+  // сразу уходит в два <textarea readonly> и больше нигде не живёт — ни в
+  // localStorage/sessionStorage, ни в адресе, ни в console. «Готово» или уход
+  // с "Настроек" (renderSettings/любой другой экран перерисовывают app) —
+  // и DOM с токеном исчезает, показать его снова нельзя.
+  var mcpBoxMode = null;
+  var mcpIssueSeq = 0; // ответ на выпуск, пришедший после ухода/повторного входа, не рисуется
+
+  function mcpConfigText(token) {
+    // Формат mcp.json LM Studio (https://lmstudio.ai/docs/app/mcp): удалённый
+    // сервер — url + headers. Адрес — этот же контур (location.origin), / в
+    // конце обязателен: гейтвей проксирует /api/mcp/.
+    return JSON.stringify({
+      mcpServers: {
+        wallet: {
+          url: location.origin + '/api/mcp/',
+          headers: { Authorization: 'Bearer ' + token },
+        },
+      },
+    }, null, 2);
+  }
+
+  function renderMcpTokenBox() {
+    var box = document.getElementById('mcp-token-box');
+    if (!box) return;
+    if (mcpBoxMode === 'form') {
+      box.innerHTML =
+        '<div class="mcp-token-form">' +
+        '<label class="mcp-field"><span>Название</span>' +
+        '<input type="text" id="mcp-token-name" maxlength="64" placeholder="LM Studio дома" autocomplete="off"></label>' +
+        '<p class="mcp-hint-err" id="mcp-token-name-err"></p>' +
+        '<div class="mcp-token-buttons">' +
+        '<button type="button" class="btn" id="mcp-token-issue-btn">Выпустить токен</button>' +
+        '<button type="button" class="btn btn-secondary" id="mcp-token-cancel-btn">Отмена</button>' +
+        '</div>' +
+        '<p class="mcp-hint-err" id="mcp-token-error"></p>' +
+        '</div>';
+      var input = document.getElementById('mcp-token-name');
+      input.focus();
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') issueMcpToken();
+      });
+      document.getElementById('mcp-token-issue-btn').addEventListener('click', issueMcpToken);
+      document.getElementById('mcp-token-cancel-btn').addEventListener('click', function () {
+        mcpBoxMode = null;
+        mcpIssueSeq++;
+        renderMcpTokenBox();
+      });
+      return;
+    }
+    // null; режим 'shown' рисует showMcpToken — здесь его не перерисовать: токена уже нет.
+    mcpBoxMode = null;
+    box.innerHTML = '<button type="button" class="btn btn-secondary mcp-connect-btn" id="mcp-connect-btn">' +
+      'Подключить MCP-клиент</button>';
+    document.getElementById('mcp-connect-btn').addEventListener('click', function () {
+      mcpBoxMode = 'form';
+      renderMcpTokenBox();
+    });
+  }
+
+  function issueMcpToken() {
+    var input = document.getElementById('mcp-token-name');
+    var btn = document.getElementById('mcp-token-issue-btn');
+    var nameErr = document.getElementById('mcp-token-name-err');
+    var formErr = document.getElementById('mcp-token-error');
+    if (!input || !btn || btn.disabled) return;
+    var name = input.value.trim();
+    nameErr.textContent = '';
+    formErr.textContent = '';
+    if (!name || name.length > 64) {
+      nameErr.textContent = 'Введите название от 1 до 64 символов';
+      return;
+    }
+
+    btn.disabled = true;
+    var seq = ++mcpIssueSeq;
+    apiFetch('/auth/mcp-tokens', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    })
+      .then(function (res) {
+        if (seq !== mcpIssueSeq) return null;
+        if (res.status === 401) {
+          renderLogin();
+          return null;
+        }
+        // Тело может быть не JSON (404 от nginx до выката google-auth) —
+        // тогда причина "HTTP <код>".
+        return res.json().catch(function () { return null; }).then(function (data) {
+          if (res.status === 409) {
+            var e409 = new Error('Слишком много MCP-токенов — отзовите ненужный в списке ниже.');
+            e409.full = true;
+            throw e409;
+          }
+          if (res.status !== 201 || !data || !data.token) {
+            throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          }
+          return data;
+        });
+      })
+      .then(function (data) {
+        if (!data || seq !== mcpIssueSeq) return;
+        showMcpToken(data);
+      })
+      .catch(function (err) {
+        if (seq !== mcpIssueSeq) return;
+        var e = document.getElementById('mcp-token-error');
+        var b = document.getElementById('mcp-token-issue-btn');
+        if (e) e.textContent = err.full ? err.message : 'Не удалось выпустить токен: ' + err.message;
+        if (b) b.disabled = false; // название в поле не трогаем
+      });
+  }
+
+  // data — ответ 201 {token, device_id, name, expires_at}; token отсюда
+  // попадает только в value двух textarea.
+  function showMcpToken(data) {
+    var box = document.getElementById('mcp-token-box');
+    if (!box) return;
+    mcpBoxMode = 'shown';
+    box.innerHTML =
+      '<div class="mcp-token-shown">' +
+      '<h3>Токен для «' + escapeHtml(data.name || '') + '»</h3>' +
+      '<p class="mcp-token-warn">Скопируйте токен сейчас — больше он показан не будет. Отключится ' +
+      escapeHtml(formatLocalDateTime(data.expires_at, false)) +
+      ', если клиент не будет обращаться к кошельку; каждое обращение продлевает срок, но не дольше 90 дней с выпуска.</p>' +
+      '<label class="mcp-field"><span>Токен</span>' +
+      '<textarea readonly rows="2" class="mcp-token-value" id="mcp-token-value" spellcheck="false"></textarea></label>' +
+      '<div class="mcp-copy-row">' +
+      '<button type="button" class="btn btn-secondary" id="mcp-token-copy-btn">Скопировать токен</button>' +
+      '<span class="mcp-copy-hint" id="mcp-token-copy-hint"></span></div>' +
+      '<label class="mcp-field"><span>Конфиг MCP-клиента (mcp.json LM Studio)</span>' +
+      '<textarea readonly rows="10" class="mcp-config-value" id="mcp-config-value" spellcheck="false"></textarea></label>' +
+      '<div class="mcp-copy-row">' +
+      '<button type="button" class="btn btn-secondary" id="mcp-config-copy-btn">Скопировать конфиг</button>' +
+      '<span class="mcp-copy-hint" id="mcp-config-copy-hint"></span></div>' +
+      '<div class="mcp-token-buttons">' +
+      '<button type="button" class="btn" id="mcp-token-done-btn">Готово</button></div>' +
+      '</div>';
+    var tokenField = document.getElementById('mcp-token-value');
+    var configField = document.getElementById('mcp-config-value');
+    tokenField.value = data.token;
+    configField.value = mcpConfigText(data.token);
+    document.getElementById('mcp-token-copy-btn').addEventListener('click', function () {
+      copyFieldText(tokenField, this, document.getElementById('mcp-token-copy-hint'));
+    });
+    document.getElementById('mcp-config-copy-btn').addEventListener('click', function () {
+      copyFieldText(configField, this, document.getElementById('mcp-config-copy-hint'));
+    });
+    document.getElementById('mcp-token-done-btn').addEventListener('click', function () {
+      mcpBoxMode = null;
+      renderMcpTokenBox(); // стирает оба textarea вместе с токеном
+      loadSettingsDevices(); // новая MCP-сессия появится в списке
+    });
+  }
+
+  // Копирование секрета с честным фолбэком: в отличие от copyAccessLink,
+  // без Clipboard API (стенд по http с IP — не secure context) или при
+  // отказе записи НЕ притворяется, что скопировало, а выделяет текст поля и
+  // просит нажать Ctrl+C — иначе блок закрыли бы с пустым буфером.
+  function copyFieldText(field, btn, hint) {
+    var label = btn.getAttribute('data-label') || btn.textContent;
+    btn.setAttribute('data-label', label);
+    if (hint) hint.textContent = '';
+    var selectField = function () {
+      field.focus();
+      field.select();
+      field.setSelectionRange(0, field.value.length); // iOS Safari не выделяет одним select()
+      if (hint) hint.textContent = 'Выделено — нажмите Ctrl+C (⌘C на Mac)';
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      selectField();
+      return;
+    }
+    navigator.clipboard.writeText(field.value).then(function () {
+      btn.textContent = 'Скопировано';
+      setTimeout(function () { btn.textContent = label; }, 1500);
+    }, selectField);
   }
 
   // "Настройки" — по прямому запросу (2026-09-11), заодно с удалением
@@ -1017,6 +1230,20 @@
       case 'mdy': return m + '/' + day + '/' + y;
       default: return day + '.' + m + '.' + y; // 'dmy' и любое незнакомое значение
     }
+  }
+
+  // Момент (ISO 8601 с поясом, обычно UTC) → дата в МЕСТНОМ поясе браузера в
+  // формате из "Формата даты" и, при withTime, " ЧЧ:ММ". formatDate сам
+  // отрезает первые 10 символов ISO-строки, т.е. берёт дату по UTC: для
+  // 2026-10-31T22:30:00Z в UTC+3 вышло бы 31.10 вместо 01.11. Нужна для
+  // моментов (сроки сессий, последнее использование), не для дат операций.
+  function formatLocalDateTime(iso, withTime) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+    var s = formatDate(d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()));
+    return withTime ? s + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) : s;
   }
 
   // Пикер валюты в "Настройках" — по прямому запросу ("сделай такой же
@@ -1109,6 +1336,8 @@
   function renderSettings() {
     setWide(true);
     var selectedIso = settingsCurrencyValue();
+    mcpBoxMode = null; // показанный раньше MCP-токен при новом входе на экран не возвращается
+    mcpIssueSeq++;
 
     app.innerHTML =
       '<h1>Настройки</h1>' +
@@ -1143,7 +1372,10 @@
       'Отзыв снимает и refresh-, и парный access-токен немедленно — но только в ' +
       'этом сервисе: доступ к кошелькам/отчётам (wallet-api/wallet-gateway) ' +
       'сохранится до истечения access-токена (обычно 15 минут), см. README google-auth.</p>' +
-      '<div id="settings-devices"><p class="sub">Загрузка…</p></div>' +
+      '<div id="settings-devices">' +
+      '<div id="mcp-token-box"></div>' +
+      '<div id="settings-devices-table"><p class="sub">Загрузка…</p></div>' +
+      '</div>' +
       '</section>' +
       '<section class="danger-zone">' +
       '<h2>Опасная зона</h2>' +
@@ -1166,6 +1398,7 @@
     });
 
     downloadSettingsCurrencyDirectory();
+    renderMcpTokenBox();
     loadSettingsDevices();
     wireDeleteAccount();
   }
