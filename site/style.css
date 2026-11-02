@@ -782,6 +782,31 @@ tr.device-current { background: var(--sand2); }
 }
 .cur-delta-up { color: var(--inc); font-weight: 600; }
 .cur-delta-down { color: var(--exp); font-weight: 600; }
+/* Справочник валют на "Курсах валют" (app.js::curCurrenciesHtml/
+   curCurrencyFormHtml, currency-ui-tweaks): таблица — тот же table.users,
+   форма — подписанные поля-пилюли (как .cur-add-form) на поверхности
+   карточки, пикер иконки — сетка флагов с подсветкой выбранного. */
+.cur-currency-name { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.cur-currency-actions { white-space: nowrap; }
+.cur-currency-form {
+  display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin: 12px 0; padding: 14px;
+  border: 1px solid var(--l10); border-radius: 16px; background: var(--surf);
+}
+.cur-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink4); }
+.cur-field input {
+  height: 40px; box-sizing: border-box; width: 160px; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none;
+}
+.cur-field input[type="number"] { width: 120px; }
+.cur-field-wide, .cur-check, .cur-currency-form-buttons { flex-basis: 100%; }
+.cur-check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink2); cursor: pointer; }
+.cur-currency-form-buttons { display: flex; gap: 8px; }
+.cur-currency-form-buttons .btn { margin: 0; }
+.cur-icon-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; padding: 2px; }
+.cur-icon-cell { border: 2px solid transparent; border-radius: 999px; background: none; padding: 2px; cursor: pointer; }
+.cur-icon-cell:hover { border-color: var(--l14); }
+.cur-icon-cell.active { border-color: var(--acc); }
+.cur-icon-flag { display: block; width: 34px; height: 34px; background-size: 26px; }
 
 /* График истории курса ("Курсы валют" → пара, cur-rate-chart) — та же
    палитра линии/точек, что у .month-chart-balance-svg (остаток на "Обзоре"/
@@ -1148,6 +1173,11 @@ tr.device-current { background: var(--sand2); }
   .move-row { grid-template-columns: 26px 1fr auto; }
 
   .cur-controls-row input, .cur-add-form input, .cur-add-form select { flex: 1 1 140px; min-width: 0; font-size: 16px; }
+  /* Таблица валют (5 колонок) — прокрутка внутри обёртки, а не всей
+     страницы: общее правило выше снимает её у .users-table-wrap. */
+  .users-table-wrap.cur-currencies-wrap { overflow-x: auto; }
+  .cur-field { flex: 1 1 140px; min-width: 0; }
+  .cur-field input, .cur-field input[type="number"] { width: 100%; font-size: 16px; }
   .access-ttl-row { flex-wrap: wrap; }
 }
 
