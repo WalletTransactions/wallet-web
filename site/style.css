@@ -335,6 +335,58 @@ tr.device-current { background: var(--sand2); }
 .icon-admin-name {
   font-size: 12px; color: var(--ink5); text-align: center; word-break: break-word;
 }
+/* Общий набор на админском экране (server-managed-icons): ячейка шире —
+   под кнопки «Переименовать»/«Удалить» текстом (как .btn-view-as/
+   .btn-force-logout) и поле переименования; ошибка — мелко под кнопками. */
+.icon-admin-grid.editable .icon-admin-cell { width: 116px; }
+.icon-admin-actions { display: flex; flex-direction: column; align-items: center; gap: 0; }
+.icon-admin-act {
+  border: none; background: none; color: var(--acc); cursor: pointer; font-size: 12px;
+  font-family: inherit; padding: 3px 6px; font-weight: 600;
+}
+.icon-admin-act.danger { color: var(--exp); }
+.icon-admin-act:disabled { color: var(--ink5); cursor: default; }
+.icon-admin-rename-input {
+  width: 100%; box-sizing: border-box; height: 30px; padding: 0 8px; border: 1.5px solid var(--l14);
+  border-radius: 10px; background: var(--bg); color: var(--ink); font-family: inherit; font-size: 13px; outline: none;
+}
+.icon-admin-rename-input:focus { border-color: var(--acc); }
+.icon-admin-err { color: var(--exp); font-size: 12px; line-height: 1.35; text-align: center; margin: 0; }
+.icon-admin-err:empty { display: none; }
+/* Форма «Добавить иконку» — поверхность и поля-пилюли как у
+   .cur-currency-form/.cur-field; превью — квадрат (видно, что ушло на
+   сервер после обрезки по центру), не кружок .cat-icon. */
+.icon-add-form {
+  margin: 8px 0 16px; padding: 14px; border: 1px solid var(--l10); border-radius: 16px; background: var(--surf);
+}
+.icon-add-form h3 { font-family: var(--font-display); font-size: 15px; margin: 0 0 10px; color: var(--ink); }
+.icon-add-row { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; }
+.icon-add-preview {
+  flex: none; width: 64px; height: 64px; border-radius: 12px; background: var(--sand2) center / cover no-repeat;
+  border: 1px solid var(--l10); box-sizing: border-box;
+}
+.icon-add-form select {
+  height: 40px; box-sizing: border-box; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none;
+}
+/* .cur-field input рисует пилюлю 160px — файловому полю она ни к чему. */
+.icon-add-file input[type="file"] {
+  width: auto; max-width: 240px; height: auto; padding: 8px 0; border: none; border-radius: 0; background: none;
+  font-family: inherit; font-size: 13px; color: var(--ink2);
+}
+.icon-add-form .btn { margin: 0; height: 40px; box-sizing: border-box; }
+.icon-add-form .btn:disabled { opacity: .55; cursor: default; }
+.icon-add-err { font-size: 13.5px; margin: 8px 0 0; }
+.icon-add-err:empty { display: none; }
+@media (max-width: 700px) {
+  .icon-add-row { flex-direction: column; align-items: stretch; }
+  .icon-add-row .cur-field { flex: none; }
+  .icon-add-form select, .icon-add-form input[type="text"] { width: 100%; font-size: 16px; } /* 16px — без зума iOS */
+  .icon-add-file input[type="file"] { max-width: 100%; }
+  .icon-add-form .btn { width: 100%; }
+  .icon-admin-grid.editable { gap: 10px; justify-content: space-between; }
+  .icon-admin-grid.editable .icon-admin-cell { width: calc(50% - 5px); }
+}
 
 /* Сайдбар-кабинет "Отчётов" (app.js::renderReports) — структура сайдбара
    (группы/пункты навигации) взята из servers/Design/.../Отчёты - веб.dc.html
