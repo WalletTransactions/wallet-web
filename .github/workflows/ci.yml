@@ -49,4 +49,9 @@ jobs:
           sleep 2
           docker exec web-ci wget -qO- http://127.0.0.1/version | tee version.json
           grep -q "\"version\":\"$(tr -d '[:space:]' < VERSION)\"" version.json
+          # Сборка без APP_BUILD — <VERSION>-dev; started_at проставлен при старте.
+          grep -q "\"build\":\"$(tr -d '[:space:]' < VERSION)-dev\"" version.json
+          grep -Eq '"started_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"' version.json
+          # Публичный /version.json — тот же файл.
+          docker exec web-ci wget -qO- http://127.0.0.1/version.json | cmp - version.json
           docker rm -f web-ci
