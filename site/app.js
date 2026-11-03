@@ -2220,8 +2220,7 @@
         renderCurrencyPickerButton();
         renderSettingsCurrencyPickerList(); // перезапрос после записи валюты (D3) — оба пикера; вне своего экрана — no-op
         renderSettingsCurrencyPickerButton();
-        curCurrencyFormCapture(); // открытая форма валюты не теряет набранное при перерисовке
-        renderCurCurrencies(); // таблица "Валюты" могла открыться раньше, чем пришёл справочник
+        renderCurCurrencies(); // вкладка "Справочник валют" могла открыться раньше, чем пришёл справочник
         // Заглушка "USD" могла не совпасть ни с одной реальной валютой этого
         // леджера (у него может не быть USD вовсе) — тогда молча остались бы
         // висеть под несуществующей валютой. Вместо этого явно берём первую
@@ -5672,16 +5671,69 @@
   var curRateFormEditDate = null; // дата редактируемой строки курса; null — форма для НОВОГО курса
   var curRateFrom = '';         // необязательный фильтр истории (YYYY-MM-DD) — как period-from/-to у отчётов
   var curRateTo = '';
-  // Таблица и форма валют (currency-ui-tweaks, design D2): кнопка "Валюты"
-  // рядом с "Добавить пару" раскрывает справочник (currencyDirectory — уже
-  // загруженный, без нового запроса). curCurrencyForm — null или
-  // {uuid|null, name, iso_code, symbol, precision, icon_uuid, icon_sha256,
-  // show_in_equivalent}: одна форма на экран, uuid null — новая валюта.
-  var curCurrenciesOpen = false;
+  // Вкладки списка (currency-form-ux, D1): 'pairs' — валютные пары,
+  // 'currencies' — справочник валют (currencyDirectory — уже загруженный, без
+  // нового запроса). Форма валюты — модальное окно #cur-currency-dialog (D2).
+  // curCurrencyForm — null или {uuid|null, name, iso_code, symbol, precision,
+  // icon_uuid, icon_sha256, show_in_equivalent, auto, errors}: uuid null —
+  // новая валюта; auto — поля, заполненные каталогом (D3), их можно
+  // перезаписать следующим пресетом; errors — {name, iso_code, icon, form} (D6).
+  var curTab = 'pairs';
   var curCurrencyForm = null;
   var curCurrencyIconPickerOpen = false;
+  var curIconQuery = '';          // строка "Поиск флага" (D5)
+  var curCurrenciesError = '';    // ошибка удаления валюты — строкой над таблицей (D6)
   var curFlagIcons = null;        // null — грузятся; [] — иконки-флаги (icon_type 1) из GET /api/reports/icons
   var curFlagIconsError = '';
+
+  // Каталог популярных валют для автозаполнения формы новой валюты (D3).
+  // flag — слова для поиска иконки-флага по её имени (curFindPresetFlag):
+  // ISO-код и страна по-английски, как в именах флагов seed.json телефона
+  // ("Flag GEL", "Flag Euro", "Croatian flag"). Точность — минорная
+  // единица ISO 4217; у криптовалют — 8, максимум формы.
+  var CURRENCY_PRESETS = [
+    { iso: 'USD', name: 'Доллар США', symbol: '$', precision: 2, flag: ['USD', 'United States', 'USA', 'America', 'American'] },
+    { iso: 'EUR', name: 'Евро', symbol: '€', precision: 2, flag: ['EUR', 'Euro', 'EU', 'Europe', 'European'] },
+    { iso: 'RUB', name: 'Российский рубль', symbol: '₽', precision: 2, flag: ['RUB', 'Russia', 'Russian'] },
+    { iso: 'GBP', name: 'Фунт стерлингов', symbol: '£', precision: 2, flag: ['GBP', 'United Kingdom', 'UK', 'Britain', 'British'] },
+    { iso: 'CHF', name: 'Швейцарский франк', symbol: 'CHF', precision: 2, flag: ['CHF', 'Switzerland', 'Swiss'] },
+    { iso: 'JPY', name: 'Японская иена', symbol: '¥', precision: 0, flag: ['JPY', 'Japan', 'Japanese'] },
+    { iso: 'CNY', name: 'Китайский юань', symbol: '¥', precision: 2, flag: ['CNY', 'China', 'Chinese'] },
+    { iso: 'KZT', name: 'Казахстанский тенге', symbol: '₸', precision: 2, flag: ['KZT', 'Kazakhstan', 'Kazakh'] },
+    { iso: 'GEL', name: 'Грузинский лари', symbol: '₾', precision: 2, flag: ['GEL', 'Georgia', 'Georgian'] },
+    { iso: 'AMD', name: 'Армянский драм', symbol: '֏', precision: 2, flag: ['AMD', 'Armenia', 'Armenian'] },
+    { iso: 'AZN', name: 'Азербайджанский манат', symbol: '₼', precision: 2, flag: ['AZN', 'Azerbaijan', 'Azerbaijani'] },
+    { iso: 'BYN', name: 'Белорусский рубль', symbol: 'Br', precision: 2, flag: ['BYN', 'Belarus', 'Belarusian'] },
+    { iso: 'UAH', name: 'Украинская гривна', symbol: '₴', precision: 2, flag: ['UAH', 'Ukraine', 'Ukrainian'] },
+    { iso: 'UZS', name: 'Узбекский сум', symbol: 'сўм', precision: 2, flag: ['UZS', 'Uzbekistan', 'Uzbek'] },
+    { iso: 'KGS', name: 'Киргизский сом', symbol: 'сом', precision: 2, flag: ['KGS', 'Kyrgyzstan', 'Kyrgyz'] },
+    { iso: 'TRY', name: 'Турецкая лира', symbol: '₺', precision: 2, flag: ['TRY', 'Turkey', 'Turkish', 'Türkiye'] },
+    { iso: 'AED', name: 'Дирхам ОАЭ', symbol: 'AED', precision: 2, flag: ['AED', 'UAE', 'Emirates'] },
+    { iso: 'ILS', name: 'Израильский шекель', symbol: '₪', precision: 2, flag: ['ILS', 'Israel', 'Israeli'] },
+    { iso: 'THB', name: 'Тайский бат', symbol: '฿', precision: 2, flag: ['THB', 'Thailand', 'Thai'] },
+    { iso: 'VND', name: 'Вьетнамский донг', symbol: '₫', precision: 0, flag: ['VND', 'Vietnam', 'Vietnamese'] },
+    { iso: 'IDR', name: 'Индонезийская рупия', symbol: 'Rp', precision: 2, flag: ['IDR', 'Indonesia', 'Indonesian'] },
+    { iso: 'INR', name: 'Индийская рупия', symbol: '₹', precision: 2, flag: ['INR', 'India', 'Indian'] },
+    { iso: 'PLN', name: 'Польский злотый', symbol: 'zł', precision: 2, flag: ['PLN', 'Poland', 'Polish'] },
+    { iso: 'CZK', name: 'Чешская крона', symbol: 'Kč', precision: 2, flag: ['CZK', 'Czech', 'Czechia'] },
+    { iso: 'HUF', name: 'Венгерский форинт', symbol: 'Ft', precision: 2, flag: ['HUF', 'Hungary', 'Hungarian'] },
+    { iso: 'RSD', name: 'Сербский динар', symbol: 'din.', precision: 2, flag: ['RSD', 'Serbia', 'Serbian'] },
+    { iso: 'BAM', name: 'Конвертируемая марка', symbol: 'KM', precision: 2, flag: ['BAM', 'Bosnia', 'Bosnian'] },
+    { iso: 'ALL', name: 'Албанский лек', symbol: 'L', precision: 2, flag: ['ALL', 'Albania', 'Albanian'] },
+    { iso: 'HRK', name: 'Хорватская куна', symbol: 'kn', precision: 2, flag: ['HRK', 'Croatia', 'Croatian'] },
+    { iso: 'CAD', name: 'Канадский доллар', symbol: 'C$', precision: 2, flag: ['CAD', 'Canada', 'Canadian'] },
+    { iso: 'AUD', name: 'Австралийский доллар', symbol: 'A$', precision: 2, flag: ['AUD', 'Australia', 'Australian'] },
+    { iso: 'MXN', name: 'Мексиканское песо', symbol: '$', precision: 2, flag: ['MXN', 'Mexico', 'Mexican'] },
+    { iso: 'BRL', name: 'Бразильский реал', symbol: 'R$', precision: 2, flag: ['BRL', 'Brazil', 'Brazilian'] },
+    { iso: 'ARS', name: 'Аргентинское песо', symbol: '$', precision: 2, flag: ['ARS', 'Argentina', 'Argentine'] },
+    { iso: 'CLP', name: 'Чилийское песо', symbol: '$', precision: 0, flag: ['CLP', 'Chile', 'Chilean'] },
+    { iso: 'KES', name: 'Кенийский шиллинг', symbol: 'KSh', precision: 2, flag: ['KES', 'Kenya', 'Kenyan'] },
+    { iso: 'TZS', name: 'Танзанийский шиллинг', symbol: 'TSh', precision: 2, flag: ['TZS', 'Tanzania', 'Tanzanian'] },
+    { iso: 'USDT', name: 'Tether', symbol: '₮', precision: 2, flag: ['USDT', 'Tether'] },
+    { iso: 'USDC', name: 'USD Coin', symbol: 'USDC', precision: 2, flag: ['USDC'] },
+    { iso: 'BTC', name: 'Биткоин', symbol: '₿', precision: 8, flag: ['BTC', 'Bitcoin'] },
+    { iso: 'ETH', name: 'Эфир', symbol: 'Ξ', precision: 8, flag: ['ETH', 'Ethereum', 'Ether'] },
+  ];
 
   // График истории курса (см. curRateChartHtml/wireCurChart ниже) — состояние
   // перетаскивания диапазона живёт здесь, а не в замыкании одного вызова
@@ -5832,44 +5884,75 @@
     );
   }
 
-  // Сетка иконок-флагов формы валюты — перерисовывается отдельно от полей
-  // формы (renderCurCurrencyIconPicker), чтобы выбор иконки не стирал уже
-  // набранные название/код.
+  // --- пикер иконки формы валюты (currency-form-ux, D5) --------------------
+  // Кнопка + поле "Поиск флага" + сетка. При вводе в поиск перерисовывается
+  // только сетка (#cur-icon-grid), поле остаётся тем же узлом и не теряет
+  // фокус; выбор иконки перерисовывает пикер целиком, но не поля формы.
+  function curIconGridHtml() {
+    var f = curCurrencyForm;
+    if (curFlagIconsError) return '<p class="err">Не удалось загрузить иконки: ' + escapeHtml(curFlagIconsError) + '</p>';
+    if (curFlagIcons === null) return '<p class="sub">Загрузка…</p>';
+    if (!curFlagIcons.length) return '<p class="wallet-empty">Иконок-флагов нет.</p>';
+    var q = curIconQuery.trim().toLowerCase();
+    var shown = curFlagIcons.filter(function (i) { return !q || String(i.name).toLowerCase().indexOf(q) >= 0; });
+    if (!shown.length) return '<p class="wallet-empty">Ничего не найдено.</p>';
+    return shown.map(function (i) {
+      return '<button type="button" class="cur-icon-cell' + (i.uuid === f.icon_uuid ? ' active' : '') + '" ' +
+        'data-cur-pick-icon="' + escapeHtml(i.uuid) + '" data-sha256="' + escapeHtml(i.sha256) + '" ' +
+        'title="' + escapeHtml(i.name) + '">' + categoryIconHtml(i.sha256, 'cur-icon-flag') +
+        '<span class="cur-icon-caption">' + escapeHtml(i.name) + '</span></button>';
+    }).join('');
+  }
+
+  function curSelectedIconName() {
+    var f = curCurrencyForm;
+    var icon = (curFlagIcons || []).filter(function (i) { return i.uuid === f.icon_uuid; })[0];
+    return icon ? icon.name : '';
+  }
+
   function curCurrencyIconPickerHtml() {
     var f = curCurrencyForm;
+    var name = curSelectedIconName();
     var buttonHtml = f.icon_sha256
-      ? categoryIconHtml(f.icon_sha256, 'currency-picker-row-flag') + '<span>Сменить…</span>'
+      ? categoryIconHtml(f.icon_sha256, 'currency-picker-row-flag') +
+        '<span>' + escapeHtml(name || 'Выбрана') + '</span><span class="sub-id">Сменить…</span>'
       : '<span class="currency-picker-row-flag"></span><span class="sub-id">Выбрать…</span>';
-    var gridHtml = '';
+    var panelHtml = '';
     if (curCurrencyIconPickerOpen) {
-      if (curFlagIconsError) {
-        gridHtml = '<p class="err">Не удалось загрузить иконки: ' + escapeHtml(curFlagIconsError) + '</p>';
-      } else if (curFlagIcons === null) {
-        gridHtml = '<p class="sub">Загрузка…</p>';
-      } else if (!curFlagIcons.length) {
-        gridHtml = '<p class="wallet-empty">Иконок-флагов нет.</p>';
-      } else {
-        gridHtml = '<div class="cur-icon-grid">' + curFlagIcons.map(function (i) {
-          return '<button type="button" class="cur-icon-cell' + (i.uuid === f.icon_uuid ? ' active' : '') + '" ' +
-            'data-cur-pick-icon="' + escapeHtml(i.uuid) + '" data-sha256="' + escapeHtml(i.sha256) + '" ' +
-            'title="' + escapeHtml(i.name) + '">' + categoryIconHtml(i.sha256, 'cur-icon-flag') + '</button>';
-        }).join('') + '</div>';
-      }
+      panelHtml =
+        '<input type="search" id="cur-icon-search" class="cur-icon-search" placeholder="Поиск флага" ' +
+        'value="' + escapeHtml(curIconQuery) + '" autocomplete="off">' +
+        '<div class="cur-icon-grid" id="cur-icon-grid">' + curIconGridHtml() + '</div>';
     }
     return (
-      '<button type="button" class="currency-picker-btn" id="cur-currency-icon-btn">' + buttonHtml + '</button>' +
-      gridHtml
+      '<button type="button" class="currency-picker-btn' + (f.errors.icon ? ' invalid' : '') + '" id="cur-currency-icon-btn">' +
+      buttonHtml + '</button>' +
+      curFieldErrorHtml('icon') +
+      panelHtml
     );
   }
 
   function renderCurCurrencyIconPicker() {
     var el = document.getElementById('cur-currency-icon-picker');
     if (el && curCurrencyForm) el.innerHTML = curCurrencyIconPickerHtml();
+    renderCurIsoFlag();
+  }
+
+  function renderCurIconGrid() {
+    var el = document.getElementById('cur-icon-grid');
+    if (el && curCurrencyForm) el.innerHTML = curIconGridHtml();
+  }
+
+  // Превью флага слева в поле "ISO-код" (D7) — то же, что выбрано в пикере.
+  function renderCurIsoFlag() {
+    var el = document.getElementById('cur-iso-flag');
+    if (el && curCurrencyForm) el.innerHTML = categoryIconHtml(curCurrencyForm.icon_sha256, 'cur-iso-flag-img');
   }
 
   // Иконки — через fetchReport('icons') при каждом открытии формы: обычно
   // уже в reportsCache (их грузит вкладка "Иконки" при входе в "Отчёты"),
-  // тогда без нового запроса.
+  // тогда без нового запроса. Пресет мог примениться раньше, чем пришли
+  // иконки, — тогда флаг подбирается здесь (D4).
   function loadCurFlagIcons() {
     curFlagIcons = null;
     curFlagIconsError = '';
@@ -5877,6 +5960,9 @@
       .then(function (data) {
         if (!data) return; // 401 — renderLogin() уже вызван
         curFlagIcons = data.user.concat(data.common).filter(function (i) { return String(i.icon_type) === '1'; });
+        if (curCurrencyForm && curCurrencyForm.presetIso) {
+          curApplyPresetFlag(curPresetByIso(curCurrencyForm.presetIso));
+        }
         renderCurCurrencyIconPicker();
       })
       .catch(function (err) {
@@ -5885,53 +5971,207 @@
       });
   }
 
+  // --- каталог и автозаполнение (currency-form-ux, D3/D4) -------------------
+  function curPresetByIso(iso) {
+    var key = String(iso || '').trim().toUpperCase();
+    if (!key) return null;
+    return CURRENCY_PRESETS.filter(function (p) { return p.iso === key; })[0] || null;
+  }
+
+  function curPresetByName(name) {
+    var key = String(name || '').trim().toLowerCase();
+    if (!key) return null;
+    return CURRENCY_PRESETS.filter(function (p) { return p.name.toLowerCase() === key; })[0] || null;
+  }
+
+  // Пресеты, которых ещё нет в справочнике, — для подсказок datalist.
+  function curAvailablePresets() {
+    var have = {};
+    currencyDirectory.forEach(function (c) { have[String(c.iso_code).toUpperCase()] = true; });
+    return CURRENCY_PRESETS.filter(function (p) { return !have[p.iso]; });
+  }
+
+  // Иконка-флаг под подсказки пресета (preset.flag) или null (D4). Имена
+  // флагов заданы людьми и не единообразны: "Flag GEL", "Flag Euro",
+  // "Bosnian flag", "Croatian flag" (seed.json телефона). Сравнение — по
+  // словам целиком, без учёта регистра, а не подстрокой: короткие коды
+  // давали бы ложные совпадения ("ALL" в "Small", "RUB" в "Rubble").
+  // Подсказка из нескольких слов ("United States") ищется как подряд идущие
+  // слова имени. Приоритет — порядок подсказок (ISO-код первым), а не
+  // порядок иконок: "Flag USD" побеждает "American flag".
+  function curFlagNameWords(name) {
+    return String(name || '').toLowerCase().split(/[\s_\-.,()]+/).filter(Boolean);
+  }
+
+  function curFindPresetFlag(preset, icons) {
+    var named = icons.map(function (i) { return { icon: i, text: ' ' + curFlagNameWords(i.name).join(' ') + ' ' }; });
+    for (var h = 0; h < preset.flag.length; h++) {
+      var hint = ' ' + curFlagNameWords(preset.flag[h]).join(' ') + ' ';
+      if (hint === '  ') continue;
+      for (var k = 0; k < named.length; k++) {
+        if (named[k].text.indexOf(hint) >= 0) return named[k].icon;
+      }
+    }
+    return null;
+  }
+
+  // Флаг из пресета ставится, только если иконка не выбрана или выбрана
+  // прошлым пресетом (auto.icon): выбранное руками не перетираем.
+  function curApplyPresetFlag(preset) {
+    var f = curCurrencyForm;
+    if (!preset || !f || !curFlagIcons) return;
+    if (f.icon_uuid && !f.auto.icon) return;
+    var icon = curFindPresetFlag(preset, curFlagIcons);
+    if (!icon) return;
+    f.icon_uuid = icon.uuid;
+    f.icon_sha256 = icon.sha256;
+    f.auto.icon = true;
+    f.errors.icon = '';
+    if (!curIconQuery) curCurrencyIconPickerOpen = false; // флаг нашёлся — сетка больше не нужна
+  }
+
+  // Применение пресета к новой валюте: заполняются только пустые поля и
+  // поля, заполненные прошлым пресетом (f.auto); значения в DOM и в
+  // curCurrencyForm обновляются вместе. source — поле, которое вызвало
+  // совпадение ('iso_code' или 'name'): его не трогаем, пользователь его
+  // только что набрал.
+  function curApplyPreset(preset, source) {
+    var f = curCurrencyForm;
+    if (!f || f.uuid || !preset) return;
+    f.presetIso = preset.iso;
+    var values = { iso_code: preset.iso, name: preset.name, symbol: preset.symbol, precision: String(preset.precision) };
+    var ids = { iso_code: 'cur-currency-iso', name: 'cur-currency-name', symbol: 'cur-currency-symbol', precision: 'cur-currency-precision' };
+    Object.keys(values).forEach(function (k) {
+      if (k === source) return;
+      var el = document.getElementById(ids[k]);
+      var current = el ? el.value : f[k];
+      // Точность новой формы — дефолт "2", не ввод пользователя: считаем её
+      // заполненной каталогом с самого начала (openCurCurrencyForm).
+      if (current.trim() && !f.auto[k]) return;
+      f[k] = values[k];
+      f.auto[k] = true;
+      if (el) el.value = values[k];
+      if (f.errors[k]) { f.errors[k] = ''; curRenderFieldError(k); }
+    });
+    curApplyPresetFlag(preset);
+    curUpdateSymbolPlaceholder();
+    renderCurCurrencyIconPicker();
+  }
+
+  function curDatalistHtml() {
+    var presets = curAvailablePresets();
+    return (
+      '<datalist id="cur-preset-iso">' + presets.map(function (p) {
+        return '<option value="' + escapeHtml(p.iso) + '">' + escapeHtml(p.name) + '</option>';
+      }).join('') + '</datalist>' +
+      '<datalist id="cur-preset-name">' + presets.map(function (p) {
+        return '<option value="' + escapeHtml(p.name) + '">' + escapeHtml(p.iso) + '</option>';
+      }).join('') + '</datalist>'
+    );
+  }
+
+  // --- окно формы валюты (currency-form-ux, D2/D6/D7) -----------------------
+  var CUR_FIELD_IDS = { name: 'cur-currency-name', iso_code: 'cur-currency-iso' };
+
+  function curFieldErrorHtml(key) {
+    var msg = curCurrencyForm && curCurrencyForm.errors[key];
+    // <span>, не <p>: ошибка поля лежит внутри <label class="cur-field">.
+    return '<span class="cur-field-error" id="cur-err-' + key + '"' + (msg ? '' : ' hidden') + '>' + escapeHtml(msg || '') + '</span>';
+  }
+
+  // Точечное обновление ошибки одного поля — без перерисовки формы, чтобы
+  // не сбивать фокус и курсор при вводе.
+  function curRenderFieldError(key) {
+    var f = curCurrencyForm;
+    if (!f) return;
+    var msg = f.errors[key] || '';
+    var errEl = document.getElementById('cur-err-' + key);
+    if (errEl) { errEl.textContent = msg; errEl.hidden = !msg; }
+    var input = CUR_FIELD_IDS[key] && document.getElementById(CUR_FIELD_IDS[key]);
+    if (input) input.classList.toggle('invalid', !!msg);
+    if (key === 'icon') {
+      var btn = document.getElementById('cur-currency-icon-btn');
+      if (btn) btn.classList.toggle('invalid', !!msg);
+    }
+    if (key === 'form') {
+      var formErr = document.getElementById('cur-form-error');
+      if (formErr) { formErr.textContent = msg; formErr.hidden = !msg; }
+    }
+  }
+
+  function curUpdateSymbolPlaceholder() {
+    var iso = document.getElementById('cur-currency-iso');
+    var sym = document.getElementById('cur-currency-symbol');
+    if (iso && sym) sym.placeholder = iso.value.trim() || 'Как ISO-код';
+  }
+
   function curCurrencyFormHtml() {
     var f = curCurrencyForm;
-    function field(label, id, type, value, extra) {
+    var isNew = !f.uuid;
+    function field(key, label, id, type, value, extra, prefixHtml) {
+      var msg = key && f.errors[key];
       return '<label class="cur-field"><span>' + label + '</span>' +
-        '<input type="' + type + '" id="' + id + '" value="' + escapeHtml(value) + '"' + (extra || '') + '></label>';
+        (prefixHtml ? '<span class="cur-input-with-flag">' + prefixHtml : '') +
+        '<input type="' + type + '" id="' + id + '" value="' + escapeHtml(value) + '"' +
+        (msg ? ' class="invalid"' : '') + (extra || '') + '>' +
+        (prefixHtml ? '</span>' : '') +
+        (key ? curFieldErrorHtml(key) : '') + '</label>';
     }
     return (
+      '<form class="cur-dialog-body" method="dialog" novalidate>' +
+      '<h2 class="cur-dialog-title">' + (isNew ? 'Новая валюта' : 'Валюта ' + escapeHtml(f.iso_code)) + '</h2>' +
+      (isNew ? curDatalistHtml() : '') +
       '<div class="cur-currency-form">' +
-      field('Название', 'cur-currency-name', 'text', f.name) +
-      field('ISO-код', 'cur-currency-iso', 'text', f.iso_code, ' maxlength="8" autocapitalize="characters"') +
-      field('Символ', 'cur-currency-symbol', 'text', f.symbol) +
-      field('Точность (знаков после запятой)', 'cur-currency-precision', 'number', f.precision, ' min="0" max="8"') +
+      field('iso_code', 'ISO-код', 'cur-currency-iso', 'text', f.iso_code,
+        ' maxlength="8" autocapitalize="characters" autocomplete="off" spellcheck="false"' +
+        (isNew ? ' list="cur-preset-iso" placeholder="Например GEL"' : ''),
+        '<span class="cur-iso-flag" id="cur-iso-flag">' + categoryIconHtml(f.icon_sha256, 'cur-iso-flag-img') + '</span>') +
+      field('name', 'Название', 'cur-currency-name', 'text', f.name,
+        ' autocomplete="off"' + (isNew ? ' list="cur-preset-name" placeholder="Например Грузинский лари"' : '')) +
+      field(null, 'Символ', 'cur-currency-symbol', 'text', f.symbol,
+        ' autocomplete="off" placeholder="' + escapeHtml(f.iso_code || 'Как ISO-код') + '"') +
+      field(null, 'Точность (знаков после запятой)', 'cur-currency-precision', 'number', f.precision,
+        ' min="0" max="8" placeholder="2"') +
       '<div class="cur-field cur-field-wide"><span>Иконка</span>' +
       '<div id="cur-currency-icon-picker">' + curCurrencyIconPickerHtml() + '</div></div>' +
       '<label class="cur-check"><input type="checkbox" id="cur-currency-eq"' + (f.show_in_equivalent ? ' checked' : '') + '> ' +
       'Показывать в эквиваленте</label>' +
+      '<p class="err cur-form-error" id="cur-form-error"' + (f.errors.form ? '' : ' hidden') + '>' + escapeHtml(f.errors.form || '') + '</p>' +
       '<div class="cur-currency-form-buttons">' +
       '<button type="button" class="btn" id="cur-save-currency-btn">Сохранить</button>' +
       '<button type="button" class="btn btn-secondary" id="cur-cancel-currency-btn">Отмена</button>' +
       '</div>' +
-      '</div>'
+      '</div>' +
+      '</form>'
     );
   }
 
-  // Набранное в форме валюты — обратно в curCurrencyForm перед полной
-  // перерисовкой #cur-root (renderCurList: "Добавить пару", пикеры пары),
-  // иначе такая перерисовка стирала бы введённые поля.
-  function curCurrencyFormCapture() {
-    if (!curCurrencyForm) return;
-    var nameEl = document.getElementById('cur-currency-name');
-    if (!nameEl) return;
-    curCurrencyForm.name = nameEl.value;
-    curCurrencyForm.iso_code = document.getElementById('cur-currency-iso').value;
-    curCurrencyForm.symbol = document.getElementById('cur-currency-symbol').value;
-    curCurrencyForm.precision = document.getElementById('cur-currency-precision').value;
-    curCurrencyForm.show_in_equivalent = document.getElementById('cur-currency-eq').checked;
+  function curDialogEl() {
+    return document.getElementById('cur-currency-dialog');
+  }
+
+  function renderCurCurrencyDialog() {
+    var dlg = curDialogEl();
+    if (!dlg || !curCurrencyForm) return;
+    dlg.innerHTML = curCurrencyFormHtml();
+  }
+
+  // Закрытие окна — единственный путь сброса формы: "Отмена", Esc (cancel),
+  // клик по затемнению, успешное сохранение, уход с вкладки (D2).
+  function closeCurCurrencyDialog() {
+    curCurrencyForm = null;
+    curCurrencyIconPickerOpen = false;
+    curIconQuery = '';
+    var dlg = curDialogEl();
+    if (!dlg) return;
+    if (dlg.open) dlg.close();
+    dlg.innerHTML = '';
   }
 
   function curCurrenciesHtml() {
-    if (!curCurrenciesOpen) return '';
     if (!currencyDirectory.length) return '<p class="sub">Справочник валют недоступен.</p>';
-    // Нет is_own ни у одной строки — старый wallet-report без currency-ui-tweaks
-    // (D6): тогда и "Добавить валюту" скрыта, писать вслепую не даём.
-    var canWrite = !viewAsUser && currencyDirectory.some(function (c) { return typeof c.is_own === 'boolean'; });
     return (
-      (canWrite ? '<button type="button" class="btn" id="cur-add-currency-btn">Добавить валюту</button>' : '') +
-      (canWrite && curCurrencyForm ? curCurrencyFormHtml() : '') +
+      (curCurrenciesError ? '<p class="err">' + escapeHtml(curCurrenciesError) + '</p>' : '') +
       '<div class="users-table-wrap cur-currencies-wrap">' +
       '<table class="users" id="cur-currencies-table">' +
       '<thead><tr><th class="no-sort">Валюта</th><th class="no-sort">Символ</th><th class="no-sort">Точность</th>' +
@@ -5941,19 +6181,26 @@
     );
   }
 
-  // Только блок валют (#cur-currencies) — без пересоздания поля поиска пар
-  // (тот же приём, что renderCurRows): зовётся и из loadCurrencies, когда
-  // справочник пришёл после открытия таблицы.
+  // Писать в справочник можно, если это не режим "Посмотреть как клиент"
+  // (currency-ui-tweaks D5) и wallet-report отдаёт is_own (D6).
+  function curCanWriteCurrencies() {
+    return !viewAsUser && currencyDirectory.some(function (c) { return typeof c.is_own === 'boolean'; });
+  }
+
+  // Только блок валют (#cur-currencies) — без пересоздания всего #cur-root:
+  // зовётся и из loadCurrencies, когда справочник пришёл после открытия
+  // вкладки. Кнопка "Добавить валюту" зависит от справочника (is_own) —
+  // обновляется тут же.
   function renderCurCurrencies() {
     var el = document.getElementById('cur-currencies');
     if (!el) return;
     el.innerHTML = curCurrenciesHtml();
-    var btn = document.getElementById('cur-toggle-currencies-btn');
-    if (btn) btn.textContent = curCurrenciesOpen ? 'Скрыть валюты' : 'Валюты';
+    var btn = document.getElementById('cur-add-currency-btn');
+    if (btn) btn.hidden = !curCanWriteCurrencies();
   }
 
-  // Тексты 409 записи валюты (design D4) — те же, что у формы валюты на
-  // телефоне; иначе — текст ошибки сервера.
+  // Тексты 409 записи валюты (currency-ui-tweaks D4) — те же, что у формы
+  // валюты на телефоне; иначе — текст ошибки сервера.
   function currencyErrorText(err) {
     var b = err && err.body;
     if (b && b.error === 'duplicate' && b.field === 'iso_code') return 'Валюта с таким кодом уже есть';
@@ -5973,39 +6220,55 @@
   }
 
   function openCurCurrencyForm(c) {
+    var errors = { name: '', iso_code: '', icon: '', form: '' };
     curCurrencyForm = c
       ? { uuid: c.uuid, name: c.name, iso_code: c.iso_code, symbol: c.symbol || '',
           precision: c.precision === undefined || c.precision === null ? '' : String(c.precision),
           icon_uuid: c.icon_uuid || '', icon_sha256: c.icon_sha256 || '',
-          show_in_equivalent: c.show_in_equivalent !== false }
-      : { uuid: null, name: '', iso_code: '', symbol: '', precision: '', icon_uuid: '', icon_sha256: '',
-          show_in_equivalent: true };
-    curCurrencyIconPickerOpen = false;
-    renderCurCurrencies();
+          show_in_equivalent: c.show_in_equivalent !== false, auto: {}, errors: errors }
+      // Новая: точность "2" (D7) и помечена как заполненная каталогом —
+      // пресет с другой точностью (BTC — 8) её заменит.
+      : { uuid: null, name: '', iso_code: '', symbol: '', precision: '2', icon_uuid: '', icon_sha256: '',
+          show_in_equivalent: true, auto: { precision: true }, errors: errors };
+    curCurrencyIconPickerOpen = !c; // у новой иконки нет — сетку сразу видно
+    curIconQuery = '';
+    curCurrenciesError = '';
+    renderCurCurrencyDialog();
+    var dlg = curDialogEl();
+    if (dlg && !dlg.open) dlg.showModal();
+    var first = document.getElementById(c ? 'cur-currency-name' : 'cur-currency-iso');
+    if (first) first.focus();
     loadCurFlagIcons();
   }
 
   function renderCurList() {
     var root = document.getElementById('cur-root');
     if (!root) return;
-    curCurrencyFormCapture();
+    var onPairs = curTab === 'pairs';
+    var tabsHtml =
+      '<div class="ops-seg-group cur-tabs">' +
+      '<button type="button" class="ops-seg-btn' + (onPairs ? ' active' : '') + '" data-cur-tab="pairs">Валютные пары</button>' +
+      '<button type="button" class="ops-seg-btn' + (onPairs ? '' : ' active') + '" data-cur-tab="currencies">Справочник валют</button>' +
+      '</div>';
+    var actionHtml = onPairs
+      ? '<button type="button" class="btn" id="cur-toggle-add-btn">' + (curAddFormOpen ? 'Скрыть форму' : 'Добавить пару') + '</button>'
+      : '<button type="button" class="btn" id="cur-add-currency-btn"' + (curCanWriteCurrencies() ? '' : ' hidden') + '>Добавить валюту</button>';
+    var bodyHtml = onPairs
+      ? '<div class="wallet-search-row"><input type="text" id="cur-search" ' +
+        'placeholder="Пара или валюта (например EUR)" value="' + escapeHtml(curQuery) + '"></div>' +
+        curAddFormHtml() +
+        '<div class="users-table-wrap">' +
+        '<table class="users" id="cur-table">' +
+        '<thead><tr><th>Пара</th><th>Последний курс</th><th>Изменение</th><th>Действия</th></tr></thead>' +
+        '<tbody id="cur-rows"></tbody>' +
+        '</table></div>'
+      : '<div id="cur-currencies">' + curCurrenciesHtml() + '</div>';
     root.innerHTML =
       '<section class="report-section">' +
-      '<div class="wallet-search-row"><input type="text" id="cur-search" ' +
-      'placeholder="Пара или валюта (например EUR)" value="' + escapeHtml(curQuery) + '"></div>' +
-      '<button type="button" class="btn btn-secondary" id="cur-toggle-add-btn">' +
-      (curAddFormOpen ? 'Скрыть форму' : 'Добавить пару') + '</button>' +
-      '<button type="button" class="btn btn-secondary" id="cur-toggle-currencies-btn">' +
-      (curCurrenciesOpen ? 'Скрыть валюты' : 'Валюты') + '</button>' +
-      curAddFormHtml() +
-      '<div id="cur-currencies">' + curCurrenciesHtml() + '</div>' +
-      '<div class="users-table-wrap">' +
-      '<table class="users" id="cur-table">' +
-      '<thead><tr><th>Пара</th><th>Последний курс</th><th>Изменение</th><th>Действия</th></tr></thead>' +
-      '<tbody id="cur-rows"></tbody>' +
-      '</table></div>' +
+      '<div class="cur-tabs-row">' + tabsHtml + actionHtml + '</div>' +
+      bodyHtml +
       '</section>';
-    renderCurRows();
+    if (onPairs) renderCurRows();
   }
 
   function curRateRowHtml(r, precision) {
@@ -6316,12 +6579,15 @@
         renderCurList();
         return;
       }
-      // Справочник валют (currency-ui-tweaks) — только блок #cur-currencies,
-      // поле поиска пар и строки пар не перерисовываются.
-      if (ev.target.closest('#cur-toggle-currencies-btn')) {
-        curCurrenciesOpen = !curCurrenciesOpen;
-        if (!curCurrenciesOpen) { curCurrencyForm = null; curCurrencyIconPickerOpen = false; }
-        renderCurCurrencies();
+      // Вкладки "Валютные пары" / "Справочник валют" (currency-form-ux D1).
+      if ((el = ev.target.closest('[data-cur-tab]'))) {
+        var tab = el.getAttribute('data-cur-tab');
+        if (tab !== curTab) {
+          curTab = tab;
+          curPairPickerOpen = null;
+          curCurrenciesError = '';
+          renderCurList();
+        }
         return;
       }
       if (ev.target.closest('#cur-add-currency-btn')) {
@@ -6334,72 +6600,20 @@
         if (editCur) openCurCurrencyForm(editCur);
         return;
       }
-      if (ev.target.closest('#cur-cancel-currency-btn')) {
-        curCurrencyForm = null;
-        curCurrencyIconPickerOpen = false;
-        renderCurCurrencies();
-        return;
-      }
-      if (ev.target.closest('#cur-currency-icon-btn')) {
-        curCurrencyIconPickerOpen = !curCurrencyIconPickerOpen;
-        renderCurCurrencyIconPicker();
-        return;
-      }
-      if ((el = ev.target.closest('[data-cur-pick-icon]'))) {
-        curCurrencyForm.icon_uuid = el.getAttribute('data-cur-pick-icon');
-        curCurrencyForm.icon_sha256 = el.getAttribute('data-sha256');
-        curCurrencyIconPickerOpen = false;
-        renderCurCurrencyIconPicker();
-        return;
-      }
-      if ((el = ev.target.closest('#cur-save-currency-btn'))) {
-        var curForm = curCurrencyForm;
-        var curName = document.getElementById('cur-currency-name').value.trim();
-        var curIso = document.getElementById('cur-currency-iso').value.trim().toUpperCase();
-        var curSymbol = document.getElementById('cur-currency-symbol').value.trim();
-        var curPrecision = parseInt(document.getElementById('cur-currency-precision').value, 10);
-        if (!curName || !curIso) { window.alert('Заполните название и ISO-код'); return; }
-        if (!curForm.icon_uuid) { window.alert('Выберите иконку'); return; }
-        var curBody = {
-          name: curName,
-          iso_code: curIso,
-          icon_uuid: curForm.icon_uuid,
-          precision: isNaN(curPrecision) ? 2 : curPrecision,
-          show_in_equivalent: document.getElementById('cur-currency-eq').checked,
-        };
-        if (curSymbol) curBody.symbol = curSymbol; // пустой — не отправляем: сервер подставит ISO-код (новая) / не тронет (правка)
-        el.disabled = true;
-        apiJson(curForm.uuid ? '/api/currencies/' + encodeURIComponent(curForm.uuid) : '/api/currencies', {
-          method: curForm.uuid ? 'PATCH' : 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(curBody),
-        })
-          .then(function (saved) {
-            if (!saved) return; // 401 — renderLogin() уже вызван
-            curCurrencyForm = null;
-            curCurrencyIconPickerOpen = false;
-            afterCurrencyWrite();
-          })
-          .catch(function (err) {
-            window.alert('Не удалось сохранить валюту: ' + currencyErrorText(err));
-            el.disabled = false; // форма остаётся открытой с введёнными значениями
-          });
-        return;
-      }
       if ((el = ev.target.closest('[data-cur-delete-currency]'))) {
         var delUuid = el.getAttribute('data-cur-delete-currency');
-        if (!window.confirm('Удалить валюту ' + el.getAttribute('data-iso') + '?')) return;
+        curCurrenciesError = '';
+        if (!window.confirm('Удалить валюту ' + el.getAttribute('data-iso') + '?')) { renderCurCurrencies(); return; }
         el.disabled = true;
         apiJson('/api/currencies/' + encodeURIComponent(delUuid), { method: 'DELETE', credentials: 'include' })
           .then(function (res) {
             if (!res) { el.disabled = false; return; }
-            if (curCurrencyForm && curCurrencyForm.uuid === delUuid) curCurrencyForm = null;
             afterCurrencyWrite();
           })
           .catch(function (err) {
-            window.alert('Не удалось удалить валюту: ' + currencyErrorText(err));
-            el.disabled = false;
+            // Без alert (D6) — строкой над таблицей до следующего действия.
+            curCurrenciesError = 'Не удалось удалить валюту: ' + currencyErrorText(err);
+            renderCurCurrencies();
           });
         return;
       }
@@ -6557,6 +6771,140 @@
       if (curPairPickerOpen !== null) {
         curPairPickerOpen = null;
         renderCurList();
+      }
+    });
+
+    wireCurCurrencyDialog();
+  }
+
+  // Окно формы валюты (currency-form-ux D2) — вне #cur-root, поэтому свои
+  // делегирующие слушатели на самом <dialog>; узел живёт, пока открыты
+  // "Отчёты", его содержимое перерисовывает renderCurCurrencyDialog().
+  function wireCurCurrencyDialog() {
+    var dlg = curDialogEl();
+    if (!dlg) return;
+
+    // Esc: нативный cancel закрыл бы окно, но не сбросил бы форму.
+    dlg.addEventListener('cancel', function (ev) {
+      ev.preventDefault();
+      closeCurCurrencyDialog();
+    });
+
+    dlg.addEventListener('input', function (ev) {
+      var f = curCurrencyForm;
+      var t = ev.target;
+      if (!f) return;
+      if (t.id === 'cur-icon-search') {
+        curIconQuery = t.value;
+        renderCurIconGrid();
+        return;
+      }
+      var key = { 'cur-currency-iso': 'iso_code', 'cur-currency-name': 'name',
+                  'cur-currency-symbol': 'symbol', 'cur-currency-precision': 'precision' }[t.id];
+      if (!key) return;
+      if (key === 'iso_code') {
+        // Верхний регистр на лету (D7) с сохранением позиции курсора.
+        var upper = t.value.toUpperCase();
+        if (upper !== t.value) {
+          var pos = t.selectionStart;
+          t.value = upper;
+          t.setSelectionRange(pos, pos);
+        }
+        curUpdateSymbolPlaceholder();
+      }
+      f[key] = t.value;
+      delete f.auto[key]; // набрано руками — каталог это поле больше не трогает
+      if (f.errors[key]) { f.errors[key] = ''; curRenderFieldError(key); }
+      if (key === 'iso_code') curApplyPreset(curPresetByIso(t.value), 'iso_code');
+      if (key === 'name') curApplyPreset(curPresetByName(t.value), 'name');
+    });
+
+    dlg.addEventListener('change', function (ev) {
+      if (ev.target.id === 'cur-currency-eq' && curCurrencyForm) curCurrencyForm.show_in_equivalent = ev.target.checked;
+    });
+
+    // Enter в поле поиска флага не должен отправлять форму method="dialog".
+    dlg.addEventListener('submit', function (ev) { ev.preventDefault(); });
+
+    dlg.addEventListener('click', function (ev) {
+      var el;
+      var f = curCurrencyForm;
+      // Клик по самому <dialog> (не по .cur-dialog-body) — по затемнению вокруг окна.
+      if (ev.target === dlg) { closeCurCurrencyDialog(); return; }
+      if (!f) return;
+      if (ev.target.closest('#cur-cancel-currency-btn')) { closeCurCurrencyDialog(); return; }
+      if (ev.target.closest('#cur-currency-icon-btn')) {
+        curCurrencyIconPickerOpen = !curCurrencyIconPickerOpen;
+        renderCurCurrencyIconPicker();
+        var search = document.getElementById('cur-icon-search');
+        if (search) search.focus();
+        return;
+      }
+      if ((el = ev.target.closest('[data-cur-pick-icon]'))) {
+        f.icon_uuid = el.getAttribute('data-cur-pick-icon');
+        f.icon_sha256 = el.getAttribute('data-sha256');
+        delete f.auto.icon; // выбран руками — пресет его не заменит
+        f.errors.icon = '';
+        curCurrencyIconPickerOpen = false;
+        curIconQuery = '';
+        renderCurCurrencyIconPicker();
+        return;
+      }
+      if ((el = ev.target.closest('#cur-save-currency-btn'))) {
+        var curName = document.getElementById('cur-currency-name').value.trim();
+        var curIso = document.getElementById('cur-currency-iso').value.trim().toUpperCase();
+        var curSymbol = document.getElementById('cur-currency-symbol').value.trim();
+        var curPrecision = parseInt(document.getElementById('cur-currency-precision').value, 10);
+        // Клиентские проверки (D6) — все сразу, без alert и без запроса.
+        f.errors = {
+          name: curName ? '' : 'Заполните название',
+          iso_code: curIso ? '' : 'Заполните ISO-код',
+          icon: f.icon_uuid ? '' : 'Выберите иконку',
+          form: '',
+        };
+        ['name', 'iso_code', 'icon', 'form'].forEach(curRenderFieldError);
+        if (f.errors.name || f.errors.iso_code || f.errors.icon) {
+          var bad = document.querySelector('#cur-currency-dialog .invalid');
+          if (bad && bad.focus) bad.focus();
+          return;
+        }
+        var curBody = {
+          name: curName,
+          iso_code: curIso,
+          icon_uuid: f.icon_uuid,
+          precision: isNaN(curPrecision) ? 2 : curPrecision,
+          show_in_equivalent: document.getElementById('cur-currency-eq').checked,
+        };
+        if (curSymbol) curBody.symbol = curSymbol; // пустой — не отправляем: сервер подставит ISO-код (новая) / не тронет (правка)
+        el.disabled = true;
+        apiJson(f.uuid ? '/api/currencies/' + encodeURIComponent(f.uuid) : '/api/currencies', {
+          method: f.uuid ? 'PATCH' : 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(curBody),
+        })
+          .then(function (saved) {
+            if (!saved) return; // 401 — renderLogin() уже вызван
+            closeCurCurrencyDialog();
+            afterCurrencyWrite();
+          })
+          .catch(function (err) {
+            // Окно могли закрыть, пока шёл запрос, — тогда показывать некуда.
+            if (curCurrencyForm !== f) return;
+            el.disabled = false; // форма остаётся открытой с введёнными значениями
+            var b = err && err.body;
+            var dupField = b && b.error === 'duplicate' && (b.field === 'iso_code' || b.field === 'name') ? b.field : null;
+            if (dupField) {
+              f.errors[dupField] = currencyErrorText(err);
+              curRenderFieldError(dupField);
+              var dupEl = document.getElementById(CUR_FIELD_IDS[dupField]);
+              if (dupEl) dupEl.focus();
+            } else {
+              f.errors.form = 'Не удалось сохранить валюту: ' + currencyErrorText(err);
+              curRenderFieldError('form');
+            }
+          });
+        return;
       }
     });
   }
@@ -9051,6 +9399,9 @@
       renderAiRoot();
     }
     var enteringAi = view === 'ai' && reportsView !== 'ai';
+    // Модальное окно валюты в скрытой вкладке оставило бы страницу инертной
+    // (уйти можно "Назад" браузера) — закрываем (currency-form-ux D2).
+    if (view !== 'cur') closeCurCurrencyDialog();
     reportsView = view;
     REPORTS_BUILT_VIEWS.forEach(function (v) {
       document.getElementById('view-' + v).hidden = v !== view;
@@ -9302,6 +9653,8 @@
     accessCopiedId = null;
     curCurrencyForm = null; // форма валюты прошлого захода (мог смениться и режим "Посмотреть как клиент") не переживает ухода
     curCurrencyIconPickerOpen = false;
+    curIconQuery = '';
+    curCurrenciesError = '';
     resetAi(); // незавершённый разбор прошлого захода снимается, карточка не переживает ухода
     // Сохранённое состояние — сразу в разметке, а не toggle-ом после вставки:
     // иначе при каждом заходе на "Отчёты" было бы видно, как свёрнутый
@@ -9516,6 +9869,8 @@
       '</div>' +
       '<div id="view-cur" hidden>' +
       '<div id="cur-root"><p class="sub">Загрузка…</p></div>' +
+      // Вне #cur-root (currency-form-ux D2): renderCurList его не пересоздаёт.
+      '<dialog id="cur-currency-dialog" class="cur-dialog" aria-label="Валюта"></dialog>' +
       '</div>' +
       '<div id="view-acc" hidden>' +
       '<div id="access-root"><p class="sub">Загрузка…</p></div>' +
