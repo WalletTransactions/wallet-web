@@ -5979,8 +5979,10 @@
           precision: c.precision === undefined || c.precision === null ? '' : String(c.precision),
           icon_uuid: c.icon_uuid || '', icon_sha256: c.icon_sha256 || '',
           show_in_equivalent: c.show_in_equivalent !== false }
+      // Новая валюта — без флага «В эквиваленте», кроме самой первой в справочнике
+      // (openspec currency-eq-default-off; то же правило, что форма на телефоне).
       : { uuid: null, name: '', iso_code: '', symbol: '', precision: '', icon_uuid: '', icon_sha256: '',
-          show_in_equivalent: true };
+          show_in_equivalent: !currencyDirectory.length };
     curCurrencyIconPickerOpen = false;
     renderCurCurrencies();
     loadCurFlagIcons();
