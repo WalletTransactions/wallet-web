@@ -4383,11 +4383,58 @@
     return out;
   }
 
-  // Держать в паре с .treemap-container{height:...} в style.css — squarify
-  // должен знать РЕАЛЬНУЮ высоту контейнера в px, а не вычитывать её из CSS
-  // (доставать computed style ради одного числа, которое мы сами и задали,
-  // усложнение без пользы).
-  var TREEMAP_HEIGHT = 380;
+  // Высота карты — переменная, её выставляет treemapHeight() инлайн-стилем
+  // перед каждой раскладкой. Нижняя граница — min-height из style.css
+  // (.treemap-container: 380px, на телефоне 300px) — читается из computed
+  // style, чтобы граница жила в ОДНОМ месте: раньше JS считал плитки на
+  // фиксированные 380px, а CSS на телефоне давал контейнеру 300px, и нижний
+  // ряд плиток обрезался. Fallback — когда стилей нет (jsdom-харнесс).
+  var TREEMAP_FALLBACK_MIN_HEIGHT = 380;
+  // Ширина, на которой минимальной высоты "хватает": уже неё карта растёт
+  // в высоту обратно пропорционально ширине — площадь плиток сохраняется, и
+  // при сужении окна плитки уходят вниз, а не сплющиваются в столбики.
+  var TREEMAP_REF_WIDTH = 560;
+  // Потолок — 2 минимальные высоты: длинный список категорий справа не
+  // должен растягивать карту на несколько экранов.
+  var TREEMAP_MAX_HEIGHT_FACTOR = 2;
+
+  // Две причины расти выше минимума, берётся бо́льшая:
+  //  1) узкий контейнер — площадь (см. TREEMAP_REF_WIDTH);
+  //  2) двухколоночная раскладка — колонка "Категории" справа выше карты,
+  //     и под картой оставалась пустота: тянем карту до низа соседней
+  //     колонки. В одну колонку (<900px, см. .structure-grid) соседняя секция
+  //     стоит НИЖЕ — её высота карте не указ (сравниваем offsetTop, а не
+  //     дублируем брейкпоинт из CSS).
+  function treemapHeight(el, w) {
+    var minH = parseFloat(window.getComputedStyle(el).minHeight) || TREEMAP_FALLBACK_MIN_HEIGHT;
+    var h = minH * Math.max(1, TREEMAP_REF_WIDTH / w);
+    var section = el.closest('.report-section');
+    var neighbour = section && section.nextElementSibling;
+    if (neighbour && neighbour.offsetTop === section.offsetTop) {
+      // Заголовок и подпись под картой — то, что секция добавляет к карте.
+      var chrome = section.offsetHeight - el.offsetHeight;
+      h = Math.max(h, neighbour.offsetHeight - chrome);
+    }
+    return Math.round(Math.min(minH * TREEMAP_MAX_HEIGHT_FACTOR, Math.max(minH, h)));
+  }
+
+  // Перерисовка карты на ресайз окна и сворачивание сайдбара. Раньше карта
+  // строилась по ширине один раз, и при сужении правая часть плиток уезжала
+  // под колонку "Категории" (обрезалась overflow:hidden). Реагируем ТОЛЬКО на
+  // смену ширины: высоту контейнеру выставляем мы сами, и без этой проверки
+  // observer зациклился бы на собственной перерисовке. Ширина 0 — вкладку
+  // скрыли (display:none), её покажет switchReportsView. Observer вешается
+  // один раз на элемент: renderReports пересоздаёт разметку — новый элемент
+  // получит свой, старый уйдёт вместе с DOM-узлом.
+  function observeTreemapWidth(el) {
+    if (el._treemapObserver || typeof ResizeObserver === 'undefined') return;
+    el._treemapObserver = new ResizeObserver(function () {
+      var w = el.clientWidth;
+      if (!w || w === el._treemapW) return;
+      renderTreemapIfVisible();
+    });
+    el._treemapObserver.observe(el);
+  }
 
   // Кэш последнего ответа /api/reports/expense-structure — нужен, чтобы
   // перерисовать карту РЕАЛЬНОЙ шириной контейнера в момент, когда вкладка
@@ -4426,10 +4473,14 @@
     // см. README wallet-web); 600 — тот же порядок ширины, что и вся эта
     // SPA (.card.wide — 900px, минус паддинги/сайдбар).
     var containerW = el.clientWidth || 600;
+    el._treemapW = el.clientWidth;
+    observeTreemapWidth(el);
+    var containerH = treemapHeight(el, containerW);
+    el.style.height = containerH + 'px';
     var rects = squarifyTreemap(
       sized.map(function (c) { return parseFloat(c.amount_eq); }),
       containerW,
-      TREEMAP_HEIGHT
+      containerH
     );
 
     el.innerHTML = rects
@@ -9112,20 +9163,9 @@
       // приватный режим/заблокированное хранилище — сворачивание отработает
       // в рамках текущей загрузки страницы, просто не запомнится на следующую
     }
-    // .reports-main меняет ширину вместе со свёрнутым сайдбаром (CSS-
-    // transition на width, см. style.css) — карта расходов должна
-    // пересчитать плитки под НОВУЮ ширину контейнера, но только когда
-    // анимация реально закончится (clientWidth сразу после toggle ещё
-    // покажет старое значение, транзишн только начался).
-    var sidebar = document.querySelector('.reports-sidebar');
-    if (sidebar) {
-      var onEnd = function (ev) {
-        if (ev.propertyName !== 'width') return;
-        sidebar.removeEventListener('transitionend', onEnd);
-        renderTreemapIfVisible();
-      };
-      sidebar.addEventListener('transitionend', onEnd);
-    }
+    // Карту расходов под новую ширину .reports-main перерисует её
+    // ResizeObserver (см. observeTreemapWidth) — отдельно ловить
+    // transitionend сайдбара не нужно.
   }
 
   // Мобильная раскладка "Отчётов" (по прямому запросу — "адаптируй веб под

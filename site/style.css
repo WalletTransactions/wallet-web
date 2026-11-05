@@ -285,7 +285,10 @@ tr.device-current { background: var(--sand2); }
    1320px для десктопного кабинета, у нас мягче). */
 .structure-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 900px) { .structure-grid { grid-template-columns: 1fr; } }
-.treemap-container { position: relative; height: 380px; width: 100%; border-radius: 16px; overflow: hidden; background: var(--sand2); }
+/* min-height — нижняя граница высоты карты; саму высоту выставляет
+   app.js::treemapHeight инлайн-стилем (растёт на узкой ширине и до низа
+   колонки "Категории"). */
+.treemap-container { position: relative; min-height: 380px; height: 380px; width: 100%; border-radius: 16px; overflow: hidden; background: var(--sand2); }
 .treemap-tile {
   position: absolute; box-sizing: border-box; overflow: hidden; padding: 8px 10px;
   display: flex; flex-direction: column; gap: 1px; border: 2px solid var(--surf);
@@ -1245,7 +1248,7 @@ tr.device-current { background: var(--sand2); }
   .kpi-value { font-size: 19px; overflow-wrap: anywhere; }
   .kpi-foot { flex-wrap: wrap; }
   #wallet-kpis.kpi-grid { grid-template-columns: 1fr 1fr; }
-  .treemap-container { height: 300px; }
+  .treemap-container { min-height: 300px; height: 300px; }
 
   /* "Список операций": время уходит из отдельной колонки, чипы статей/
      кошельков — горизонтальная прокрутка, а не пять строк переноса. */
