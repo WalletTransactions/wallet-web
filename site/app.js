@@ -2197,9 +2197,10 @@
   }
 
   // Справочник валют эквивалента (GET /api/reports/currencies, по прямому
-  // запросу — "валюта эквивалента справочником") — грузится ОДИН раз при
-  // открытии "Отчётов" (см. конец renderReports()), не при каждом
-  // refreshPeriod(): список валют леджера не зависит от периода/фильтров.
+  // запросу — "валюта эквивалента справочником") — грузится при открытии
+  // "Отчётов" (см. конец renderReports()) и по "Обновить" (wallet-web#12),
+  // но не при каждом refreshPeriod(): список валют леджера не зависит от
+  // периода/фильтров.
   // Пока ответ не пришёл, #eq-currency держит "USD" из разметки (см.
   // renderReports) — с ним отчёты открываются сразу, кнопка пикера при этом
   // показывает пустой флаг-заглушку (currencyDirectory ещё пуст).
@@ -6227,9 +6228,11 @@
           icon_uuid: c.icon_uuid || '', icon_sha256: c.icon_sha256 || '',
           show_in_equivalent: c.show_in_equivalent !== false, auto: {}, errors: errors }
       // Новая: точность "2" (D7) и помечена как заполненная каталогом —
-      // пресет с другой точностью (BTC — 8) её заменит.
+      // пресет с другой точностью (BTC — 8) её заменит. Без флага
+      // «В эквиваленте», кроме самой первой в справочнике
+      // (openspec currency-eq-default-off; то же правило, что форма на телефоне).
       : { uuid: null, name: '', iso_code: '', symbol: '', precision: '2', icon_uuid: '', icon_sha256: '',
-          show_in_equivalent: true, auto: { precision: true }, errors: errors };
+          show_in_equivalent: !currencyDirectory.length, auto: { precision: true }, errors: errors };
     curCurrencyIconPickerOpen = !c; // у новой иконки нет — сетку сразу видно
     curIconQuery = '';
     curCurrenciesError = '';
@@ -10001,9 +10004,15 @@
     // (period-from/to, eq-currency, cmp-mode) кэш не трогает — ей и не
     // нужно, другие значения полей сами дают другой ключ кэша (см. cacheKey
     // в fetchReport), первый запрос под них в любом случае уйдёт в сеть.
+    // Справочник валют перечитывается тут же (wallet-web#12): «Обновить»
+    // пользователь понимает как «всё заново», а флаг «В эквиваленте»,
+    // снятый на телефоне, иначе дошёл бы до пикеров только при новом входе
+    // в «Отчёты». Порядок — как при входе: loadCurrencies(), затем
+    // refreshPeriod().
     document.getElementById('period-refresh-btn').addEventListener('click', function () {
       reportsCache = {};
       closePeriodPanelOnMobile();
+      loadCurrencies();
       refreshPeriod();
     });
     // Смена режима сравнения — тоже полный refreshPeriod() (он сам зовёт
