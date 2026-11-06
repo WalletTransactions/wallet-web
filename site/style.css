@@ -916,11 +916,66 @@ tr.device-current { background: var(--sand2); }
 .cur-check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink2); cursor: pointer; }
 .cur-currency-form-buttons { display: flex; gap: 8px; }
 .cur-currency-form-buttons .btn { margin: 0; }
-.cur-icon-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; padding: 2px; }
-.cur-icon-cell { border: 2px solid transparent; border-radius: 999px; background: none; padding: 2px; cursor: pointer; }
-.cur-icon-cell:hover { border-color: var(--l14); }
+/* Пикер иконки (currency-form-ux D5): поиск над сеткой, ячейка — флаг и
+   подпись (имя иконки), чтобы флаг находился без наведения мыши. */
+.cur-icon-search {
+  display: block; width: 100%; box-sizing: border-box; height: 38px; margin-top: 8px; border-radius: 999px;
+  border: 1.5px solid var(--l14); background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px;
+  color: var(--ink); outline: none;
+}
+.cur-icon-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 4px;
+  margin-top: 8px; max-height: 240px; overflow-y: auto; padding: 2px;
+}
+.cur-icon-grid > p { grid-column: 1 / -1; margin: 8px 0; }
+.cur-icon-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0;
+  border: 2px solid transparent; border-radius: 12px; background: none; padding: 4px 2px; cursor: pointer;
+  font-family: inherit;
+}
+.cur-icon-cell:hover { border-color: var(--l14); background: var(--sand2); }
 .cur-icon-cell.active { border-color: var(--acc); }
 .cur-icon-flag { display: block; width: 34px; height: 34px; background-size: 26px; }
+.cur-icon-caption {
+  max-width: 100%; font-size: 11px; font-weight: 500; color: var(--ink3); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Вкладки "Валютные пары" / "Справочник валют" и главная кнопка вкладки
+   (currency-form-ux D1) — та же .ops-seg-group, что в "Списке операций". */
+.cur-tabs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.cur-tabs-row .btn { margin: 0 0 0 auto; height: 38px; box-sizing: border-box; display: inline-flex; align-items: center; }
+.cur-tabs-row .btn[hidden] { display: none; }
+
+/* Окно формы валюты (currency-form-ux D2) — нативный <dialog>: затемнение
+   ::backdrop, поверхность карточки. Клик по самому <dialog> вне
+   .cur-dialog-body закрывает окно, поэтому padding у <dialog> нулевой, а
+   отступы — у .cur-dialog-body. */
+.cur-dialog {
+  border: none; padding: 0; border-radius: 20px; background: var(--surf); color: var(--ink);
+  box-shadow: var(--sh2); width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+}
+.cur-dialog::backdrop { background: rgba(32, 30, 29, .38); }
+.cur-dialog-body { padding: 20px 22px; }
+.cur-dialog-title { font-family: var(--font-display); font-size: 20px; margin: 0 0 4px; }
+.cur-dialog .cur-currency-form { margin: 0; padding: 0; border: none; background: none; align-items: flex-start; }
+.cur-dialog .cur-field { flex: 1 1 200px; min-width: 0; }
+.cur-dialog .cur-field input, .cur-dialog .cur-field input[type="number"] { width: 100%; }
+.cur-dialog .cur-field-wide { flex-basis: 100%; }
+.cur-dialog .currency-picker-btn { width: 100%; }
+.cur-input-with-flag { position: relative; display: block; }
+.cur-iso-flag { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); display: flex; pointer-events: none; }
+.cur-iso-flag-img { display: block; width: 22px; height: 22px; background-size: 17px; }
+.cur-input-with-flag input { padding-left: 38px; }
+#cur-currency-iso { text-transform: uppercase; }
+#cur-currency-iso::placeholder { text-transform: none; }
+
+/* Ошибки формы валюты (currency-form-ux D6) — та же подсветка, что
+   .ai-field input.invalid. */
+.cur-field input.invalid, .currency-picker-btn.invalid { border-color: var(--exp); background: var(--exp-tint); }
+.cur-field-error { display: block; margin: 2px 0 0; font-size: 12px; font-weight: 500; color: var(--exp); }
+.cur-field-error[hidden] { display: none; }
+.cur-form-error { flex-basis: 100%; margin: 0; font-size: 14px; }
 
 /* График истории курса ("Курсы валют" → пара, cur-rate-chart) — та же
    палитра линии/точек, что у .month-chart-balance-svg (остаток на "Обзоре"/
