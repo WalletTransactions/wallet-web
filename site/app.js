@@ -10024,6 +10024,8 @@
     if (!chatRoot) return;
     chatRoot.hidden = !chatAvailable;
     var open = chatAvailable && chat.open;
+    // chat-available — для отступа липких панелей экранов под кнопку (D8).
+    document.body.classList.toggle('chat-available', chatAvailable);
     document.body.classList.toggle('chat-open', open);
     document.getElementById('chat-fab').hidden = open;
     document.getElementById('chat-fab-dot').hidden = !chat.unread;

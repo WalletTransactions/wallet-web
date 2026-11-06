@@ -1608,6 +1608,11 @@ pre.st-src { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-siz
 .chat-send:disabled { opacity: .45; cursor: default; }
 .chat-send:disabled:hover { background: var(--acc); }
 .chat-input-err { grid-column: 1 / -1; margin: 0; color: var(--exp); font-size: 13px; }
+/* Липкая панель «Записать» в «Импорте выписки» прижата к низу экрана там же,
+   где кнопка: правый край панели — в 45 px от края окна на десктопе и в 29 px
+   на телефоне, кнопка занимает 24–80 px (16–68 px). 76 px справа уводят
+   кнопки панели из-под неё с запасом ≥ 20 px на обеих ширинах. */
+body.chat-available .st-footbar { padding-right: 76px; }
 
 @media (max-width: 700px) {
   .chat-fab { right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; }
