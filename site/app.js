@@ -140,6 +140,7 @@
   // уже необратимо завершено).
   function renderLogin(message) {
     setWide(false);
+    chatHide();
     app.innerHTML =
       '<h1>Кошельки</h1>' +
       (message ? '<p class="sub" style="color:var(--inc)">' + escapeHtml(message) + '</p>' : '') +
@@ -1763,6 +1764,7 @@
             if (!authData) return; // 401 — сессия и так уже не пережила бы этот момент
             viewAsUser = null; // тот же приём, что logout-btn — не переживает выход
             currentUser = null;
+            chatForget();
             renderLogin('Аккаунт удалён.');
           });
         })
@@ -4382,11 +4384,58 @@
     return out;
   }
 
-  // Держать в паре с .treemap-container{height:...} в style.css — squarify
-  // должен знать РЕАЛЬНУЮ высоту контейнера в px, а не вычитывать её из CSS
-  // (доставать computed style ради одного числа, которое мы сами и задали,
-  // усложнение без пользы).
-  var TREEMAP_HEIGHT = 380;
+  // Высота карты — переменная, её выставляет treemapHeight() инлайн-стилем
+  // перед каждой раскладкой. Нижняя граница — min-height из style.css
+  // (.treemap-container: 380px, на телефоне 300px) — читается из computed
+  // style, чтобы граница жила в ОДНОМ месте: раньше JS считал плитки на
+  // фиксированные 380px, а CSS на телефоне давал контейнеру 300px, и нижний
+  // ряд плиток обрезался. Fallback — когда стилей нет (jsdom-харнесс).
+  var TREEMAP_FALLBACK_MIN_HEIGHT = 380;
+  // Ширина, на которой минимальной высоты "хватает": уже неё карта растёт
+  // в высоту обратно пропорционально ширине — площадь плиток сохраняется, и
+  // при сужении окна плитки уходят вниз, а не сплющиваются в столбики.
+  var TREEMAP_REF_WIDTH = 560;
+  // Потолок — 2 минимальные высоты: длинный список категорий справа не
+  // должен растягивать карту на несколько экранов.
+  var TREEMAP_MAX_HEIGHT_FACTOR = 2;
+
+  // Две причины расти выше минимума, берётся бо́льшая:
+  //  1) узкий контейнер — площадь (см. TREEMAP_REF_WIDTH);
+  //  2) двухколоночная раскладка — колонка "Категории" справа выше карты,
+  //     и под картой оставалась пустота: тянем карту до низа соседней
+  //     колонки. В одну колонку (<900px, см. .structure-grid) соседняя секция
+  //     стоит НИЖЕ — её высота карте не указ (сравниваем offsetTop, а не
+  //     дублируем брейкпоинт из CSS).
+  function treemapHeight(el, w) {
+    var minH = parseFloat(window.getComputedStyle(el).minHeight) || TREEMAP_FALLBACK_MIN_HEIGHT;
+    var h = minH * Math.max(1, TREEMAP_REF_WIDTH / w);
+    var section = el.closest('.report-section');
+    var neighbour = section && section.nextElementSibling;
+    if (neighbour && neighbour.offsetTop === section.offsetTop) {
+      // Заголовок и подпись под картой — то, что секция добавляет к карте.
+      var chrome = section.offsetHeight - el.offsetHeight;
+      h = Math.max(h, neighbour.offsetHeight - chrome);
+    }
+    return Math.round(Math.min(minH * TREEMAP_MAX_HEIGHT_FACTOR, Math.max(minH, h)));
+  }
+
+  // Перерисовка карты на ресайз окна и сворачивание сайдбара. Раньше карта
+  // строилась по ширине один раз, и при сужении правая часть плиток уезжала
+  // под колонку "Категории" (обрезалась overflow:hidden). Реагируем ТОЛЬКО на
+  // смену ширины: высоту контейнеру выставляем мы сами, и без этой проверки
+  // observer зациклился бы на собственной перерисовке. Ширина 0 — вкладку
+  // скрыли (display:none), её покажет switchReportsView. Observer вешается
+  // один раз на элемент: renderReports пересоздаёт разметку — новый элемент
+  // получит свой, старый уйдёт вместе с DOM-узлом.
+  function observeTreemapWidth(el) {
+    if (el._treemapObserver || typeof ResizeObserver === 'undefined') return;
+    el._treemapObserver = new ResizeObserver(function () {
+      var w = el.clientWidth;
+      if (!w || w === el._treemapW) return;
+      renderTreemapIfVisible();
+    });
+    el._treemapObserver.observe(el);
+  }
 
   // Кэш последнего ответа /api/reports/expense-structure — нужен, чтобы
   // перерисовать карту РЕАЛЬНОЙ шириной контейнера в момент, когда вкладка
@@ -4425,10 +4474,14 @@
     // см. README wallet-web); 600 — тот же порядок ширины, что и вся эта
     // SPA (.card.wide — 900px, минус паддинги/сайдбар).
     var containerW = el.clientWidth || 600;
+    el._treemapW = el.clientWidth;
+    observeTreemapWidth(el);
+    var containerH = treemapHeight(el, containerW);
+    el.style.height = containerH + 'px';
     var rects = squarifyTreemap(
       sized.map(function (c) { return parseFloat(c.amount_eq); }),
       containerW,
-      TREEMAP_HEIGHT
+      containerH
     );
 
     el.innerHTML = rects
@@ -6940,6 +6993,7 @@
     setAiNavVisible(false);
     if (viewAsUser) {
       aiStatus = false;
+      chatSetAvailable(false); // ответы шли бы по кошельку администратора
       return;
     }
     apiFetch('/api/ai/status', { credentials: 'include' })
@@ -6948,9 +7002,16 @@
         return res.json();
       })
       .then(function (data) {
-        if (!data || data.enabled !== true || !Array.isArray(data.features)) return [];
+        var ok = !!data && data.enabled === true && Array.isArray(data.features);
+        // Чат — отдельно от пункта «ИИ» (add-web-chat, D5): только chat в
+        // features не должен показывать пустой пункт меню.
+        chatSetAvailable(ok && data.features.indexOf('chat') >= 0);
+        if (!ok) return [];
         return data.features.filter(function (f) { return f === 'parse_expense' || f === 'statement_import'; });
-      }, function () { return []; })
+      }, function () {
+        chatSetAvailable(false);
+        return [];
+      })
       .then(function (features) {
         if (!document.getElementById('nav-group-ai')) return; // "Отчёты" уже закрыты
         var enabled = features.length > 0;
@@ -9463,20 +9524,9 @@
       // приватный режим/заблокированное хранилище — сворачивание отработает
       // в рамках текущей загрузки страницы, просто не запомнится на следующую
     }
-    // .reports-main меняет ширину вместе со свёрнутым сайдбаром (CSS-
-    // transition на width, см. style.css) — карта расходов должна
-    // пересчитать плитки под НОВУЮ ширину контейнера, но только когда
-    // анимация реально закончится (clientWidth сразу после toggle ещё
-    // покажет старое значение, транзишн только начался).
-    var sidebar = document.querySelector('.reports-sidebar');
-    if (sidebar) {
-      var onEnd = function (ev) {
-        if (ev.propertyName !== 'width') return;
-        sidebar.removeEventListener('transitionend', onEnd);
-        renderTreemapIfVisible();
-      };
-      sidebar.addEventListener('transitionend', onEnd);
-    }
+    // Карту расходов под новую ширину .reports-main перерисует её
+    // ResizeObserver (см. observeTreemapWidth) — отдельно ловить
+    // transitionend сайдбара не нужно.
   }
 
   // Мобильная раскладка "Отчётов" (по прямому запросу — "адаптируй веб под
@@ -9931,6 +9981,7 @@
     document.getElementById('logout-btn').addEventListener('click', function () {
       fetch('/auth/logout', { method: 'POST', credentials: 'include' }).then(function () {
         viewAsUser = null; // не переживает выход — следующий вход (даже другим человеком) не должен унаследовать чужой режим просмотра
+        chatForget(); // лента чата тоже (add-web-chat)
         renderLogin();
       });
     });
@@ -10162,6 +10213,434 @@
       }
       window.alert('Не удалось принять приглашение: ' + err.message);
     }
+  }
+
+  // --- Чат «Спросить» (openspec add-web-chat) --------------------------------
+  // Вопросы о кошельке своими словами: задание `chat` в wallet-ai, данные
+  // модель берёт через wallet-mcp (wallet-ai/openspec/specs/ai-chat).
+  //
+  // Свой корень #chat-root в <body>, рядом с #app (D1): экраны верхнего
+  // уровня перезаписывают app.innerHTML целиком и унесли бы окно с лентой.
+  // Состояние — один объект chat (D2), окно рисуется из него; лента,
+  // conversation_id и идущее задание живут в sessionStorage (D4), поэтому
+  // переживают смену экрана и F5, но не закрытие вкладки и не «Выйти».
+  // Ожидание ответа не привязано к окну (D3): ответ в свёрнутое окно
+  // записывается в ленту и зажигает точку на кнопке. Устаревание попытки —
+  // только по chatSeq («Новый диалог», «Выйти», смена пользователя).
+  var CHAT_STORE_KEY = 'wallet.chat.v1';
+  var CHAT_MAX_MESSAGES = 50;
+  var CHAT_TEXT_MAX_BYTES = 1000; // предел input.text в wallet-ai (ChatInput)
+  var CHAT_WAIT_LIMIT_MS = 150000; // как у бота: после — DELETE и «не успел»
+  var CHAT_STALE_MS = 30 * 60 * 1000; // AI_CHAT_HISTORY_TTL_SECS wallet-ai
+  var CHAT_PROVIDER_TITLE = { lmstudio: 'LM Studio', claude: 'Claude' };
+  var CHAT_HINT = 'Спросите про траты, доходы и балансы: «сколько за няню в октябре?», ' +
+    '«сравни продукты с прошлым месяцем».';
+  var CHAT_TEXT = {
+    providerUnavailable: 'Выбранный ИИ сейчас недоступен. Сменить его можно командой /ai в Telegram-боте.',
+    off: 'ИИ сейчас выключен.',
+    busy: 'ИИ занят, попробуйте через минуту.',
+    noData: 'Не удалось получить данные кошелька, попробуйте позже.',
+    refused: 'ИИ не стал отвечать на этот вопрос.',
+    timeout: 'ИИ не успел ответить, попробуйте позже.',
+    network: 'Не удалось связаться с ИИ, проверьте соединение.',
+    generic: 'ИИ не смог ответить, попробуйте позже.',
+    stale: 'Прошло больше 30 минут — ИИ не помнит вопросы выше.',
+    tooLong: 'Вопрос длиннее 1000 байт — сократите его.',
+  };
+
+  var chatAvailable = false; // GET /api/ai/status объявил chat, не режим просмотра
+  var chatRoot = null;
+  var chatSeq = 0;
+  var chatPosting = false; // POST задания в пути — второй не создаём (двойной клик)
+  var chatPollingJob = null; // job_id, по которому сейчас идёт long-poll
+  var chatModelTitle = null; // «Модель: …»; null — не прочитана
+  var chatModelRequested = false;
+  var chat = chatEmptyState(null);
+
+  function chatNewConversationId() {
+    return 'web-' + uuidV4(); // [A-Za-z0-9_:-]{1,64}, см. ChatInput wallet-ai
+  }
+
+  function chatEmptyState(user) {
+    return {
+      user: user, open: false, conversationId: chatNewConversationId(), messages: [],
+      pending: null, // {jobId|null, startedAt, key}
+      lastAnswerAt: 0, unread: false,
+    };
+  }
+
+  function chatUtf8Bytes(s) {
+    return unescape(encodeURIComponent(s)).length;
+  }
+
+  // Окно (open) не сохраняется: после F5 оно свёрнуто. try/catch — приватный
+  // режим или заблокированное хранилище просто теряют ленту при F5.
+  function chatSave() {
+    if (!chat.user) return;
+    chat.messages = chat.messages.slice(-CHAT_MAX_MESSAGES);
+    try {
+      sessionStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
+        user: chat.user, conversationId: chat.conversationId, messages: chat.messages,
+        pending: chat.pending, lastAnswerAt: chat.lastAnswerAt, unread: chat.unread,
+      }));
+    } catch (e) { /* без хранилища — лента живёт до F5 */ }
+  }
+
+  function chatClearStore() {
+    try { sessionStorage.removeItem(CHAT_STORE_KEY); } catch (e) { /* нечего стирать */ }
+  }
+
+  // Смена пользователя (первый вход после загрузки, вход другим человеком):
+  // текущая попытка устаревает, лента — только своя из sessionStorage.
+  function chatSwitchUser(user) {
+    chatSeq++;
+    chatPosting = false;
+    chatPollingJob = null;
+    chatModelTitle = null;
+    chatModelRequested = false;
+    chat = chatEmptyState(user);
+    var saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(CHAT_STORE_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || saved.user !== user || !Array.isArray(saved.messages)) {
+      chatClearStore();
+      return;
+    }
+    if (typeof saved.conversationId === 'string' && saved.conversationId) chat.conversationId = saved.conversationId;
+    chat.messages = saved.messages.slice(-CHAT_MAX_MESSAGES);
+    chat.pending = saved.pending && typeof saved.pending.startedAt === 'number' ? saved.pending : null;
+    chat.lastAnswerAt = typeof saved.lastAnswerAt === 'number' ? saved.lastAnswerAt : 0;
+    chat.unread = saved.unread === true;
+  }
+
+  // Из refreshAiStatus: каждый заход на «Отчёты» (стартовый экран).
+  function chatSetAvailable(available) {
+    var user = currentUser ? currentUser.email : null;
+    if (chat.user !== user) chatSwitchUser(user);
+    chatAvailable = !!available && !!user && !viewAsUser;
+    if (chatAvailable) {
+      chatEnsureRoot();
+      chatResume();
+    }
+    chatRender();
+  }
+
+  // renderLogin: кнопки нет, ленту не трогаем — после повторного входа тем же
+  // человеком (истекла сессия) она на месте.
+  function chatHide() {
+    chatAvailable = false;
+    chat.open = false;
+    chatRender();
+  }
+
+  // «Выйти» и удаление аккаунта: ленту стираем, ждать нечего.
+  function chatForget() {
+    chatSeq++;
+    chatPosting = false;
+    chatPollingJob = null;
+    chat = chatEmptyState(null);
+    chatClearStore();
+    chatHide();
+  }
+
+  function chatEnsureRoot() {
+    if (chatRoot) return;
+    chatRoot = document.createElement('div');
+    chatRoot.id = 'chat-root';
+    chatRoot.hidden = true;
+    chatRoot.innerHTML =
+      '<button type="button" class="chat-fab" id="chat-fab" aria-label="Спросить ИИ" title="Спросить ИИ">' +
+      '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/>' +
+      '<path d="M9 10h6M9 13.5h4"/></svg>' +
+      '<span class="chat-fab-dot" id="chat-fab-dot" hidden></span></button>' +
+      '<section class="chat-panel" id="chat-panel" role="dialog" aria-labelledby="chat-title" hidden>' +
+      '<header class="chat-head">' +
+      '<div class="chat-head-text"><h2 id="chat-title">Спросить</h2>' +
+      '<div class="chat-model" id="chat-model" hidden></div></div>' +
+      '<button type="button" class="chat-head-btn" id="chat-new">Новый диалог</button>' +
+      '<button type="button" class="chat-head-btn chat-collapse" id="chat-collapse" aria-label="Свернуть" title="Свернуть">' +
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" ' +
+      'stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>' +
+      '</header>' +
+      '<div class="chat-log" id="chat-log" aria-live="polite"></div>' +
+      '<form class="chat-form" id="chat-form" novalidate>' +
+      '<textarea id="chat-input" rows="2" placeholder="Ваш вопрос…" aria-label="Ваш вопрос"></textarea>' +
+      '<button type="submit" class="btn chat-send" id="chat-send">Спросить</button>' +
+      '<p class="chat-input-err" id="chat-input-err" hidden></p>' +
+      '</form>' +
+      '</section>';
+    document.body.appendChild(chatRoot);
+
+    document.getElementById('chat-fab').addEventListener('click', chatOpen);
+    document.getElementById('chat-collapse').addEventListener('click', chatCollapse);
+    document.getElementById('chat-new').addEventListener('click', chatNewDialog);
+    document.getElementById('chat-panel').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        chatCollapse();
+      }
+    });
+    document.getElementById('chat-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      chatSend();
+    });
+    var input = document.getElementById('chat-input');
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+        ev.preventDefault();
+        chatSend();
+      }
+    });
+    input.addEventListener('input', function () {
+      if (chatUtf8Bytes(input.value.trim()) <= CHAT_TEXT_MAX_BYTES) chatShowInputError('');
+    });
+  }
+
+  function chatShowInputError(text) {
+    var el = document.getElementById('chat-input-err');
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
+  function chatMessageHtml(m) {
+    var text = escapeHtml(m.text || '');
+    if (m.role === 'user') return '<div class="chat-msg chat-msg-user">' + text + '</div>';
+    if (m.role === 'error') return '<div class="chat-msg chat-msg-err">' + text + '</div>';
+    if (m.role === 'divider') return '<div class="chat-divider">' + text + '</div>';
+    var sign = m.provider ? CHAT_PROVIDER_TITLE[m.provider] || m.provider : '';
+    return '<div class="chat-msg chat-msg-ai">' + text +
+      (sign ? '<div class="chat-sign">— ' + escapeHtml(sign) + '</div>' : '') + '</div>';
+  }
+
+  // Поле ввода не перерисовывается: фокус, курсор и набранный текст живут сами.
+  function chatRender() {
+    if (!chatRoot) return;
+    chatRoot.hidden = !chatAvailable;
+    var open = chatAvailable && chat.open;
+    // chat-available — для отступа липких панелей экранов под кнопку (D8).
+    document.body.classList.toggle('chat-available', chatAvailable);
+    document.body.classList.toggle('chat-open', open);
+    document.getElementById('chat-fab').hidden = open;
+    document.getElementById('chat-fab-dot').hidden = !chat.unread;
+    document.getElementById('chat-panel').hidden = !open;
+
+    var model = document.getElementById('chat-model');
+    model.hidden = !chatModelTitle;
+    model.innerHTML = chatModelTitle
+      ? 'Модель: ' + escapeHtml(chatModelTitle) + '<span class="chat-model-hint">Сменить — /ai в Telegram-боте</span>'
+      : '';
+
+    document.getElementById('chat-send').disabled = !!chat.pending || chatPosting;
+
+    if (!open) return;
+    var log = document.getElementById('chat-log');
+    var html = chat.messages.map(chatMessageHtml).join('');
+    if (chat.pending) html += '<div class="chat-msg chat-msg-ai chat-pending">Думаю…</div>';
+    if (!html) html = '<p class="chat-hint">' + escapeHtml(CHAT_HINT) + '</p>';
+    log.innerHTML = html;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function chatOpen() {
+    if (!chatAvailable) return;
+    chat.open = true;
+    chat.unread = false;
+    chatSave();
+    chatRender();
+    chatLoadModel();
+    document.getElementById('chat-input').focus();
+  }
+
+  function chatCollapse() {
+    chat.open = false;
+    chatRender();
+    var fab = document.getElementById('chat-fab');
+    if (fab && chatAvailable) fab.focus();
+  }
+
+  // Один раз за загрузку страницы (и за пользователя): провайдер меняется в
+  // боте командой /ai, на вебе его не выбирают (D6).
+  function chatLoadModel() {
+    if (chatModelRequested) return;
+    chatModelRequested = true;
+    var seq = chatSeq;
+    apiFetch('/api/ai/settings', { credentials: 'include' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (seq !== chatSeq || !data || typeof data.provider !== 'string') return;
+        var p = (Array.isArray(data.providers) ? data.providers : []).filter(function (x) {
+          return x && x.id === data.provider;
+        })[0];
+        chatModelTitle = p && p.title ? String(p.title) : CHAT_PROVIDER_TITLE[data.provider] || data.provider;
+        chatRender();
+      }, function () { /* строки «Модель» просто нет */ });
+  }
+
+  function chatNewDialog() {
+    if (chat.pending && chat.pending.jobId) aiDeleteJob(chat.pending.jobId);
+    var user = chat.user;
+    chatSeq++;
+    chatPosting = false;
+    chatPollingJob = null;
+    chat = chatEmptyState(user);
+    chat.open = true;
+    chatSave();
+    chatShowInputError('');
+    chatRender();
+    document.getElementById('chat-input').focus();
+  }
+
+  function chatSend() {
+    var input = document.getElementById('chat-input');
+    var text = input.value.trim();
+    if (!chatAvailable || !text || chat.pending || chatPosting) return;
+    if (chatUtf8Bytes(text) > CHAT_TEXT_MAX_BYTES) {
+      chatShowInputError(CHAT_TEXT.tooLong);
+      return;
+    }
+    chatShowInputError('');
+
+    // wallet-ai забывает диалог через 30 минут — не делаем вид, что помнит
+    // (требование «Устаревший диалог»).
+    if (chat.lastAnswerAt && Date.now() - chat.lastAnswerAt > CHAT_STALE_MS && chat.messages.length) {
+      chat.conversationId = chatNewConversationId();
+      chat.messages.push({ role: 'divider', text: CHAT_TEXT.stale });
+    }
+    chat.messages.push({ role: 'user', text: text });
+    input.value = '';
+
+    var seq = chatSeq;
+    var key = 'web-chat:' + uuidV4();
+    chat.pending = { jobId: null, startedAt: Date.now(), key: key };
+    chatPosting = true;
+    chatSave();
+    chatRender();
+
+    var now = new Date();
+    apiFetch('/api/ai/jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'chat',
+        idempotency_key: key,
+        input: {
+          text: text,
+          conversation_id: chat.conversationId,
+          now: { date: isoDate(now), time: localTime(now) },
+        },
+      }),
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          chatPosting = false;
+          if (seq === chatSeq) renderLogin();
+          return null;
+        }
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (res.status === 202 && data && data.job_id) return data;
+          var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+          err.status = res.status;
+          err.code = data && data.error;
+          throw err;
+        });
+      })
+      .then(function (data) {
+        if (!data) return;
+        chatPosting = false;
+        if (seq !== chatSeq) {
+          aiDeleteJob(data.job_id); // «Новый диалог», пока задание создавалось
+          return;
+        }
+        chat.pending.jobId = data.job_id;
+        chatSave();
+        chatRender();
+        chatPoll(seq, data.job_id);
+      })
+      .catch(function (err) {
+        chatPosting = false;
+        if (seq !== chatSeq) return;
+        var t = CHAT_TEXT.generic;
+        if (!err.status) t = CHAT_TEXT.network;
+        else if (err.status === 503) t = err.code === 'provider_unavailable' ? CHAT_TEXT.providerUnavailable : CHAT_TEXT.off;
+        else if (err.status === 429) t = CHAT_TEXT.busy;
+        chatFinish(seq, { role: 'error', text: t });
+      });
+  }
+
+  // Long-poll ?wait=25 (до 30 с таймаута гейтвея). Предел 150 с считается от
+  // отправки (pending.startedAt лежит в sessionStorage — действует и после F5).
+  function chatPoll(seq, jobId) {
+    if (seq !== chatSeq || !chat.pending) return;
+    if (Date.now() - chat.pending.startedAt > CHAT_WAIT_LIMIT_MS) {
+      aiDeleteJob(jobId);
+      chatFinish(seq, { role: 'error', text: CHAT_TEXT.timeout });
+      return;
+    }
+    chatPollingJob = jobId;
+    apiFetch('/api/ai/jobs/' + encodeURIComponent(jobId) + '?wait=25', { credentials: 'include' })
+      .then(function (res) {
+        if (seq !== chatSeq) return null;
+        if (res.status === 401) {
+          chatPollingJob = null; // задание ждёт: после входа и F5 опрос продолжится
+          renderLogin();
+          return null;
+        }
+        if (!res.ok) {
+          var err = new Error('HTTP ' + res.status);
+          err.status = res.status;
+          throw err;
+        }
+        return res.json();
+      })
+      .then(function (job) {
+        if (!job || seq !== chatSeq) return;
+        if (job.status === 'queued' || job.status === 'running') {
+          chatPoll(seq, jobId);
+          return;
+        }
+        if (job.status === 'done' && job.result && typeof job.result.text === 'string') {
+          if (typeof job.result.conversation_id === 'string' && job.result.conversation_id) {
+            chat.conversationId = job.result.conversation_id;
+          }
+          chatFinish(seq, { role: 'ai', text: job.result.text, provider: job.result.provider || '' });
+          return;
+        }
+        var t = CHAT_TEXT.generic;
+        if (job.status === 'failed') {
+          if (job.failure === 'tools_unavailable' || job.failure === 'auth_expired') t = CHAT_TEXT.noData;
+          else if (job.failure === 'provider_refused') t = CHAT_TEXT.refused;
+        }
+        chatFinish(seq, { role: 'error', text: t });
+      })
+      .catch(function (err) {
+        if (seq !== chatSeq) return;
+        chatFinish(seq, { role: 'error', text: err.status ? CHAT_TEXT.generic : CHAT_TEXT.network });
+      });
+  }
+
+  function chatFinish(seq, message) {
+    if (seq !== chatSeq) return;
+    chat.pending = null;
+    chatPollingJob = null;
+    chat.messages.push(message);
+    chat.lastAnswerAt = Date.now();
+    if (!chat.open) chat.unread = true;
+    chatSave();
+    chatRender();
+  }
+
+  // После F5 или повторного входа: задание из sessionStorage дождаться.
+  // Без job_id (страницу перезагрузили, пока POST был в пути) ждать нечего.
+  function chatResume() {
+    if (!chat.pending || chatPosting) return;
+    if (!chat.pending.jobId) {
+      chatFinish(chatSeq, { role: 'error', text: CHAT_TEXT.generic });
+      return;
+    }
+    if (chatPollingJob !== chat.pending.jobId) chatPoll(chatSeq, chat.pending.jobId);
   }
 
   function boot() {
