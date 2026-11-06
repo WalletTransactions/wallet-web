@@ -92,6 +92,10 @@ wallet-ai помнит диалог только 30 минут, а на обще
 строк), а пока она видна (`body.chat-available`), даём панели
 `padding-right: 76px`.
 
+Бейдж версии (`#version-badge`, change service-versions) тоже стоит в правом
+нижнем углу и заходил под кнопку (2 px на десктопе, 12 px на телефоне); пока
+кнопка видна, бейдж сдвинут левее неё: `right: 88px`, на телефоне `76px`.
+
 ### Правки в других сервисах
 Не нужны. wallet-ai: `kind: chat`, `/api/ai/settings` и `features: chat` уже
 в `main`. wallet-gateway: `/api/ai/*` уже проксируется. google-auth: обмен

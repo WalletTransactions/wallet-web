@@ -10215,6 +10215,174 @@
     }
   }
 
+  // ===== Бейдж версии (openspec/changes/service-versions) =====
+  // «web <build>» в правом нижнем углу всех экранов. Кнопка живёт вне #app
+  // (index.html), поэтому перерисовки экранов через app.innerHTML её не
+  // трогают. Версия веба — публичный /version.json (nginx, тот же файл, что
+  // /version), один раз при загрузке; нет ответа — бейджа нет. Подсказка:
+  // у admin — сводка GET /api/versions гейтвея, новый запрос на каждое
+  // открытие; у остальных и на экране входа — одна строка веба. Роль — из
+  // currentUser в момент открытия, так что вход/выход ничего не переподписывают.
+  var versionBadge = document.getElementById('version-badge');
+  var webVersion = null; // ответ /version.json
+  var versionTip = null; // открытая подсказка (div в body) или null
+  // Номер открытия: ответ /api/versions, пришедший после закрытия или к
+  // предыдущему открытию, отбрасывается.
+  var versionTipSeq = 0;
+  // Открыта тапом/кликом — не закрывается уходом курсора, только Esc,
+  // кликом вне, повторным тапом или потерей фокуса.
+  var versionTipPinned = false;
+  var versionTipHovered = false;
+
+  function versionStartedAt(iso) {
+    var d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return '—';
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function versionRowHtml(s) {
+    var name = '<td>' + escapeHtml(s.service || '—') + '</td>';
+    if (s.error) return '<tr>' + name + '<td colspan="3" class="vt-err">нет ответа</td></tr>';
+    return (
+      '<tr>' + name +
+      '<td>' + escapeHtml(s.build || '—') + '</td>' +
+      '<td class="vt-mono">' + escapeHtml(s.git_commit ? String(s.git_commit).slice(0, 7) : '—') + '</td>' +
+      '<td>' + escapeHtml(versionStartedAt(s.started_at)) + '</td></tr>'
+    );
+  }
+
+  function versionTipHtml(title, rows, note) {
+    return (
+      '<div class="vt-title">' + escapeHtml(title) + '</div>' +
+      (rows.length
+        ? '<table><thead><tr><th>Сервис</th><th>Сборка</th><th>Коммит</th><th>Запущен</th></tr></thead><tbody>' +
+          rows.map(versionRowHtml).join('') + '</tbody></table>'
+        : '') +
+      (note ? '<div class="vt-note">' + escapeHtml(note) + '</div>' : '')
+    );
+  }
+
+  // Над бейджем, вплотную (без зазора — иначе курсор по пути к подсказке
+  // «уходил» бы с обоих и она закрывалась), правым краем по бейджу.
+  function placeVersionTip() {
+    var r = versionBadge.getBoundingClientRect();
+    versionTip.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+    versionTip.style.bottom = window.innerHeight - r.top + 'px';
+  }
+
+  function openVersionTip() {
+    if (versionTip || !webVersion) return;
+    var seq = ++versionTipSeq;
+    versionTip = document.createElement('div');
+    versionTip.className = 'version-tip';
+    versionTip.id = 'version-tip';
+    versionTip.setAttribute('role', 'tooltip');
+    versionTip.addEventListener('pointerenter', function () { versionTipHovered = true; });
+    versionTip.addEventListener('pointerleave', function (e) {
+      versionTipHovered = false;
+      if (e.pointerType === 'mouse' && !versionTipPinned && !versionBadge.contains(e.relatedTarget)) {
+        closeVersionTip();
+      }
+    });
+    versionBadge.setAttribute('aria-expanded', 'true');
+    versionBadge.setAttribute('aria-describedby', 'version-tip');
+    document.body.appendChild(versionTip);
+
+    if (!(currentUser && currentUser.role === 'admin')) {
+      versionTip.innerHTML = versionTipHtml('Версия', [webVersion]);
+      placeVersionTip();
+      return;
+    }
+    versionTip.innerHTML = versionTipHtml('Версии сервисов', [], 'Загрузка…');
+    placeVersionTip();
+    apiFetch('/api/versions', { credentials: 'include' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (seq !== versionTipSeq || !versionTip) return;
+        versionTip.innerHTML = versionTipHtml('Версии сервисов', (data && data.services) || []);
+        placeVersionTip();
+      })
+      .catch(function () {
+        if (seq !== versionTipSeq || !versionTip) return;
+        versionTip.innerHTML = versionTipHtml('Версии сервисов', [webVersion], 'Сводка версий недоступна');
+        placeVersionTip();
+      });
+  }
+
+  function closeVersionTip() {
+    if (!versionTip) return;
+    versionTipSeq++;
+    versionTip.parentNode.removeChild(versionTip);
+    versionTip = null;
+    versionTipPinned = false;
+    versionTipHovered = false;
+    versionBadge.setAttribute('aria-expanded', 'false');
+    versionBadge.removeAttribute('aria-describedby');
+  }
+
+  function initVersionBadge() {
+    if (!versionBadge) return;
+    // Мышь: наведение открывает, уход с бейджа и подсказки — закрывает.
+    versionBadge.addEventListener('pointerenter', function (e) {
+      if (e.pointerType === 'mouse') openVersionTip();
+    });
+    versionBadge.addEventListener('pointerleave', function (e) {
+      if (e.pointerType !== 'mouse' || versionTipPinned) return;
+      if (versionTip && versionTip.contains(e.relatedTarget)) return;
+      closeVersionTip();
+    });
+    // Тап/клик закрепляет открытую подсказку, повторный — закрывает.
+    // Фокус (Tab, а на телефоне — тот же тап) открывает раньше click,
+    // поэтому «открыта, но не закреплена» здесь — значит, закрепить.
+    versionBadge.addEventListener('click', function () {
+      if (versionTip && versionTipPinned) {
+        closeVersionTip();
+        return;
+      }
+      openVersionTip();
+      versionTipPinned = true;
+    });
+    versionBadge.addEventListener('focus', openVersionTip);
+    versionBadge.addEventListener('blur', function () {
+      if (!versionTipHovered) closeVersionTip();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (versionTip && (e.key === 'Escape' || e.key === 'Esc')) closeVersionTip();
+    });
+    // Клик/тап вне — закрыть, но сам клик не гасить: он дойдёт до того, во
+    // что попал (capture — чтобы закрыться раньше, чем обработчик цели
+    // перерисует экран).
+    document.addEventListener(
+      'click',
+      function (e) {
+        if (versionTip && !versionTip.contains(e.target) && !versionBadge.contains(e.target)) closeVersionTip();
+      },
+      true
+    );
+    window.addEventListener('resize', function () {
+      if (versionTip) placeVersionTip();
+    });
+
+    fetch('/version.json', { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (v) {
+        if (!v || !(v.build || v.version)) return;
+        webVersion = v;
+        versionBadge.textContent = 'web ' + (v.build || v.version);
+        versionBadge.hidden = false;
+      })
+      .catch(function () {
+        // Нет версии — нет бейджа, остальной экран работает как раньше.
+      });
+  }
+
   // --- Чат «Спросить» (openspec add-web-chat) --------------------------------
   // Вопросы о кошельке своими словами: задание `chat` в wallet-ai, данные
   // модель берёт через wallet-mcp (wallet-ai/openspec/specs/ai-chat).
@@ -10706,5 +10874,6 @@
       });
   }
 
+  initVersionBadge();
   boot();
 })();

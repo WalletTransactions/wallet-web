@@ -20,16 +20,22 @@ RUN cd /usr/share/nginx/html \
     done \
  && grep -q 'app.js?v=' index.html && grep -q 'style.css?v=' index.html
 
-# GET /version — та же тройка service/version/git_commit, что у C++-сервисов
-# (README google-auth, «Версия»): по ней smoke после выката сверяет, что
-# поднялся именно выкатываемый тег. Версия — из VERSION, хэш — снаружи
-# (--build-arg GIT_COMMIT, так делает CI). Файл вне корня статики, отдаёт
-# его location = /version в nginx.conf. ARG — после тяжёлых слоёв, чтобы
-# новый хэш не сбрасывал их кэш.
+# GET /version — те же поля service/version/build/git_commit/started_at, что
+# у C++-сервисов (README google-auth, «Версия»): по version/git_commit smoke
+# после выката сверяет, что поднялся именно выкатываемый тег. Версия — из
+# VERSION, хэш и тег образа — снаружи (--build-arg GIT_COMMIT и APP_BUILD,
+# так делает release.yml; без тега — `<VERSION>-dev`). started_at известен
+# только при запуске контейнера: здесь — шаблон с меткой, настоящий
+# version.json пишет entrypoint/40-version-json.sh. Файл вне корня статики,
+# отдают его location = /version и = /version.json в nginx.conf. ARG — после
+# тяжёлых слоёв, чтобы новый хэш не сбрасывал их кэш.
 COPY VERSION /tmp/VERSION
 ARG GIT_COMMIT=unknown
-RUN printf '{"git_commit":"%s","service":"wallet-web","version":"%s"}\n' \
-        "$GIT_COMMIT" "$(tr -d '[:space:]' < /tmp/VERSION)" > /etc/nginx/version.json \
+ARG APP_BUILD=
+RUN v="$(tr -d '[:space:]' < /tmp/VERSION)" \
+ && printf '{"build":"%s","git_commit":"%s","service":"wallet-web","started_at":"@STARTED_AT@","version":"%s"}\n' \
+        "${APP_BUILD:-$v-dev}" "$GIT_COMMIT" "$v" > /etc/nginx/version.json.in \
  && rm /tmp/VERSION
+COPY --chmod=0755 entrypoint/40-version-json.sh /docker-entrypoint.d/40-version-json.sh
 
 EXPOSE 80

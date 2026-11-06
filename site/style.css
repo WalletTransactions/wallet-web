@@ -1598,6 +1598,37 @@ pre.st-src { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-siz
   .st-write-btn { align-self: stretch; }
 }
 
+/* Бейдж версии в правом нижнем углу (openspec/changes/service-versions).
+   z-index 3 — НИЖЕ всего плавающего (шапка 5, .st-footbar 4, выпадающие
+   списки 20, таббар 30, шторка 40): если что-то из этого оказалось в углу,
+   бейдж уходит под него, а не закрывает кнопки. Подсказка — наоборот, поверх
+   всего: её открывают руками и она закрывается сама. */
+#version-badge {
+  position: fixed; right: 8px; bottom: calc(6px + env(safe-area-inset-bottom)); z-index: 3;
+  margin: 0; padding: 1px 7px; border: 1px solid var(--l10); border-radius: 999px;
+  background: rgba(255, 248, 236, .85); color: var(--ink5);
+  font: 11px/1.5 var(--font-body); cursor: default; opacity: .85;
+}
+#version-badge[hidden] { display: none; }
+#version-badge:hover, #version-badge:focus-visible, #version-badge[aria-expanded="true"] { color: var(--ink3); opacity: 1; }
+.version-tip {
+  position: fixed; z-index: 50; max-width: calc(100vw - 16px); overflow-x: auto;
+  padding: 10px 12px; background: var(--surf); border: 1px solid var(--l14); border-radius: 12px;
+  box-shadow: var(--sh2); color: var(--ink2); font-size: 12px;
+}
+.version-tip .vt-title { margin-bottom: 6px; color: var(--ink); font-weight: 700; }
+.version-tip table { border-collapse: collapse; white-space: nowrap; }
+.version-tip th { padding: 0 12px 4px 0; color: var(--ink4); font-weight: 600; text-align: left; }
+.version-tip td { padding: 2px 12px 2px 0; }
+.version-tip th:last-child, .version-tip td:last-child { padding-right: 0; }
+.version-tip .vt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.version-tip .vt-err { color: var(--exp); }
+.version-tip .vt-note { margin-top: 6px; color: var(--ink4); }
+@media (max-width: 720px) {
+  /* Над нижней панелью вкладок «Отчётов» (её высота — та же 64px, что у .st-footbar выше). */
+  body:has(.mobile-tabbar) #version-badge { bottom: calc(68px + env(safe-area-inset-bottom)); }
+}
+
 /* --- Чат «Спросить» (app.js, openspec add-web-chat) ----------------------
    Свой корень #chat-root в <body>, вне #app (экраны перерисовывают #app
    целиком). Кнопка — справа внизу; окно на десктопе — панель справа во всю
@@ -1671,11 +1702,16 @@ pre.st-src { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-siz
    на телефоне, кнопка занимает 24–80 px (16–68 px). 76 px справа уводят
    кнопки панели из-под неё с запасом ≥ 20 px на обеих ширинах. */
 body.chat-available .st-footbar { padding-right: 76px; }
+/* Бейдж версии (service-versions) в том же углу: на 1280 px заходил под
+   кнопку на 2 px, на телефоне — на 12 px. Пока кнопка видна, бейдж левее неё
+   (кнопка 24 + 56 px справа, на телефоне 16 + 52, плюс 8 px зазора). */
+body.chat-available #version-badge { right: 88px; }
 
 @media (max-width: 700px) {
   .chat-fab { right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; }
   /* На «Отчётах» внизу таббар (64px, как у .st-footbar) — кнопка над ним. */
   body.reports-open .chat-fab { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  body.chat-available #version-badge { right: 76px; }
   .chat-panel { inset: 0; width: auto; box-shadow: none; }
   .chat-head { padding: 10px 10px 10px 16px; }
   .chat-form textarea { font-size: 16px; } /* 16px — иначе iOS зумит при фокусе */
