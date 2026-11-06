@@ -1542,3 +1542,87 @@ pre.st-src { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-siz
   .st-footbar { bottom: calc(64px + env(safe-area-inset-bottom)); border-radius: 14px; }
   .st-write-btn { align-self: stretch; }
 }
+
+/* --- Чат «Спросить» (app.js, openspec add-web-chat) ----------------------
+   Свой корень #chat-root в <body>, вне #app (экраны перерисовывают #app
+   целиком). Кнопка — справа внизу; окно на десктопе — панель справа во всю
+   высоту, не модальная (отчёты под ней кликабельны), на телефоне — на весь
+   экран. z-index 50 — выше шторки «Ещё» (40) и таббара (30). */
+#chat-root[hidden], .chat-panel[hidden], .chat-fab[hidden], .chat-fab-dot[hidden], .chat-model[hidden],
+.chat-input-err[hidden] { display: none; }
+.chat-fab {
+  position: fixed; right: 24px; bottom: 24px; z-index: 50; width: 56px; height: 56px; border-radius: 50%;
+  border: none; background: var(--acc); color: var(--on-acc); box-shadow: 0 6px 20px rgba(46, 43, 37, .28);
+  display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s, transform .15s;
+}
+.chat-fab:hover { background: var(--acc-d); transform: translateY(-1px); }
+.chat-fab:focus-visible { outline: 3px solid var(--ink2); outline-offset: 3px; }
+.chat-fab-dot {
+  position: absolute; top: 6px; right: 6px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--inc); border: 2px solid var(--surf);
+}
+.chat-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(440px, 100vw); box-sizing: border-box;
+  display: flex; flex-direction: column; background: var(--surf); box-shadow: -8px 0 32px rgba(46, 43, 37, .18);
+  text-align: left;
+}
+.chat-head {
+  display: flex; align-items: center; gap: 8px; padding: 14px 14px 12px 20px; border-bottom: 1px solid var(--l10);
+}
+.chat-head-text { flex: 1 1 auto; min-width: 0; }
+.chat-head h2 { font-family: var(--font-display); font-size: 20px; margin: 0; color: var(--ink); }
+.chat-model { font-size: 12.5px; color: var(--ink4); margin-top: 2px; }
+.chat-model-hint { display: block; color: var(--ink5); }
+.chat-head-btn {
+  flex: none; height: 34px; padding: 0 12px; border-radius: 999px; border: 1.5px solid var(--l14);
+  background: transparent; color: var(--ink3); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.chat-head-btn:hover { background: var(--sand2); }
+.chat-collapse { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
+.chat-log {
+  flex: 1 1 auto; overflow-y: auto; padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--bg);
+}
+.chat-hint { margin: auto 8px; color: var(--ink4); font-size: 14px; line-height: 1.5; text-align: center; }
+.chat-msg {
+  max-width: 86%; padding: 10px 14px; border-radius: 16px; font-size: 14.5px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.chat-msg-user { align-self: flex-end; background: var(--acc); color: var(--on-acc); border-bottom-right-radius: 6px; }
+.chat-msg-ai { align-self: flex-start; background: var(--surf); color: var(--ink); box-shadow: var(--sh); border-bottom-left-radius: 6px; }
+.chat-msg-err { align-self: flex-start; background: var(--exp-tint); color: var(--exp); border-bottom-left-radius: 6px; }
+.chat-sign { margin-top: 6px; color: var(--ink4); font-size: 12.5px; }
+.chat-pending { color: var(--ink4); font-style: italic; }
+.chat-divider {
+  align-self: stretch; text-align: center; color: var(--ink4); font-size: 12.5px; padding: 4px 8px;
+  border-top: 1px dashed var(--l14); border-bottom: 1px dashed var(--l14);
+}
+.chat-form {
+  display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end;
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--l10); background: var(--surf);
+}
+.chat-form textarea {
+  box-sizing: border-box; width: 100%; min-height: 44px; max-height: 160px; resize: vertical; padding: 10px 14px;
+  border: 1.5px solid var(--l14); border-radius: 18px; background: var(--bg); color: var(--ink);
+  font: inherit; font-size: 14.5px; line-height: 1.4; outline: none;
+}
+.chat-form textarea:focus { border-color: var(--acc); }
+.chat-send { margin: 0; height: 44px; }
+.chat-send:disabled { opacity: .45; cursor: default; }
+.chat-send:disabled:hover { background: var(--acc); }
+.chat-input-err { grid-column: 1 / -1; margin: 0; color: var(--exp); font-size: 13px; }
+/* Липкая панель «Записать» в «Импорте выписки» прижата к низу экрана там же,
+   где кнопка: правый край панели — в 45 px от края окна на десктопе и в 29 px
+   на телефоне, кнопка занимает 24–80 px (16–68 px). 76 px справа уводят
+   кнопки панели из-под неё с запасом ≥ 20 px на обеих ширинах. */
+body.chat-available .st-footbar { padding-right: 76px; }
+
+@media (max-width: 700px) {
+  .chat-fab { right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; }
+  /* На «Отчётах» внизу таббар (64px, как у .st-footbar) — кнопка над ним. */
+  body.reports-open .chat-fab { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .chat-panel { inset: 0; width: auto; box-shadow: none; }
+  .chat-head { padding: 10px 10px 10px 16px; }
+  .chat-form textarea { font-size: 16px; } /* 16px — иначе iOS зумит при фокусе */
+  body.chat-open { overflow: hidden; }
+}
