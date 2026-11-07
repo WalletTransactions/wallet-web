@@ -1996,8 +1996,16 @@
           renderLogin(); // refresh тоже не спас — сессия реально кончилась
           return null; // 401 — не кэшируем: это не данные, а сигнал "перелогинься"
         }
-        return res.json().then(function (data) {
-          if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+        // Тело ошибки может быть не JSON (404 гейтвея на неизвестный путь) —
+        // тогда просто «HTTP <код>». status — в самой ошибке: «Капитал»
+        // отличает 404 (wallet-report без ручки, capital-assets D7) от сбоя.
+        var body = res.ok ? res.json() : res.json().catch(function () { return null; });
+        return body.then(function (data) {
+          if (!res.ok) {
+            var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+            err.status = res.status;
+            throw err;
+          }
           reportsCache[cacheKey] = data; // кэшируем ТОЛЬКО успешный ответ — ошибка не должна "залипать"
           return data;
         });
@@ -2309,7 +2317,10 @@
       kpiTileHtml('Доход', (income.incomplete ? '~ ' : '') + fmtEq(income.total_eq),
         kpiChipHtml(income.total_eq, cmpIncome ? cmpIncome.total_eq : null, 'up'), 'за период') +
       kpiTileHtml('Итог', itogNowStr, itogChip, 'доход минус расход') +
-      kpiTileHtml('Остаток', (balance.incomplete ? '~ ' : '') + fmtEq(balance.total_eq), '', 'на конец периода');
+      kpiTileHtml('Остаток', (balance.incomplete ? '~ ' : '') + fmtEq(balance.total_eq), '',
+        // total_eq с capital-assets — только ликвидные; ненулевой capital_eq
+        // говорит, что часть денег — в активах (нет поля — старый сервер).
+        parseFloat(balance.capital_eq) ? 'на конец периода, без капитала' : 'на конец периода');
   }
 
   // Столбцы кликабельны (по прямому запросу — "если мы выбрали какой-то
@@ -2370,6 +2381,9 @@
       })
       .join('');
     var hasBalanceLine = balances && balances.length === months.length;
+    // Линия капитала — только вместе с линией остатка: остатки не подошли
+    // (401, число бакетов не совпало) — нет обеих.
+    var hasCapital = hasBalanceLine && hasCapitalLine(balances);
     // Медиана — по прямому запросу ("линией на график, медиану на траты и
     // доход"): в отличие от остатка (см. комментарий про его НЕЗАВИСИМУЮ
     // шкалу чуть ниже) медиана расхода/дохода — величина ТОГО ЖЕ порядка,
@@ -2397,6 +2411,7 @@
       '<div class="chart-legend"><span><span class="legend-dot expense"></span>расход</span>' +
       '<span><span class="legend-dot income"></span>доход</span>' +
       (hasBalanceLine ? '<span><span class="legend-dot balance"></span>остаток на конец периода</span>' : '') +
+      (hasCapital ? CAPITAL_LEGEND_HTML : '') +
       (hasMedianLines
         ? '<span><span class="legend-line expense"></span>медиана расхода</span>' +
           '<span><span class="legend-line income"></span>медиана дохода</span>'
@@ -2422,6 +2437,7 @@
     var chartEl = el.querySelector('.month-chart');
     thinAxisLabels(chartEl); // ДО оверлеев — плотный режим меняет раскладку столбцов, см. её комментарий
     if (hasBalanceLine) renderMonthlyBalanceLine(chartEl, '.ov-bar-col', months, balances);
+    if (hasCapital) renderMonthlyBalanceLine(chartEl, '.ov-bar-col', months, balances, 'capital_eq', 'capital');
     if (hasMedianLines) {
       // Полоса ±σ — ДО пунктира медианы (см. комментарий у renderStdDevBands
       // про порядок position:absolute оверлеев): иначе пунктир потерялся бы
@@ -2615,7 +2631,14 @@
   // на "Обзоре", ".dyn-bar-col" на "Динамике", по прямому запросу — та же
   // линия остатка добавлена и туда): одна функция на оба места, а не две
   // копии одной и той же геометрии под разным именем класса.
-  function renderMonthlyBalanceLine(chartEl, colSelector, months, balances) {
+  //
+  // field/cls (capital-assets, design D6) — какое поле бакета рисовать и
+  // какой модификатор класса дать SVG: по умолчанию total_eq (остаток,
+  // ликвидные кошельки); вторая линия — capital_eq с классом 'capital'
+  // (пунктир). Шкала у каждой линии своя — капитал на порядки больше
+  // ликвидных, на общей шкале линия остатка схлопнулась бы.
+  function renderMonthlyBalanceLine(chartEl, colSelector, months, balances, field, cls) {
+    field = field || 'total_eq';
     if (!chartEl) return;
     var cols = chartEl.querySelectorAll(colSelector);
     var w = chartEl.clientWidth, h = chartEl.clientHeight;
@@ -2641,7 +2664,7 @@
     var barsTop = barsRect.top - containerRect.top;
     var barsBottom = barsRect.bottom - containerRect.top;
 
-    var vals = balances.map(function (b) { return parseFloat(b.total_eq) || 0; });
+    var vals = balances.map(function (b) { return parseFloat(b[field]) || 0; });
     var minV = Math.min.apply(null, vals);
     var maxV = Math.max.apply(null, vals);
     var span = maxV - minV || 1; // все 12 остатков равны — не делить на 0, просто ровная линия
@@ -2664,10 +2687,19 @@
 
     var wrap = document.createElement('div');
     wrap.innerHTML =
-      '<svg class="month-chart-balance-svg" width="' + w + '" height="' + h + '">' +
+      '<svg class="month-chart-balance-svg' + (cls ? ' month-chart-balance-svg-' + cls : '') +
+      '" width="' + w + '" height="' + h + '">' +
       '<polyline points="' + polylinePoints + '"></polyline>' + circles + '</svg>';
     chartEl.appendChild(wrap.firstChild);
   }
+
+  // Линия капитала (capital-assets) — только если хотя бы в одном бакете
+  // capital_eq ненулевой; нет поля (старый wallet-report) — линии нет.
+  function hasCapitalLine(balances) {
+    return !!balances && balances.some(function (b) { return parseFloat(b.capital_eq) > 0 || parseFloat(b.capital_eq) < 0; });
+  }
+
+  var CAPITAL_LEGEND_HTML = '<span><span class="legend-dot capital"></span>капитал на конец периода</span>';
 
   // Крестик-курсор (по прямому запросу — "вместо хинта: наведя мышку
   // вертикальная линия и сразу хинт со значениями, всеми за наведённое
@@ -2746,6 +2778,7 @@
   // так σ читается как отдельная характеристика, а не довесок к медиане, и
   // сам значок отличим от пунктира median на глаз.
   function wireMonthlyChartCrosshair(chartEl, colSelector, months, balances, groupBy, medians, stdevs) {
+    var withCapital = hasCapitalLine(balances); // строка «капитал» — только вместе с линией капитала
     wireChartCrosshair(chartEl, colSelector, function (i) {
       var m = months[i];
       var rows =
@@ -2757,6 +2790,10 @@
         var b = balances[i];
         rows += '<div class="month-chart-tooltip-row"><span><span class="legend-dot balance"></span>остаток</span>' +
           '<b>' + (b.incomplete ? '~ ' : '') + fmtEq(b.total_eq) + '</b></div>';
+        if (withCapital) {
+          rows += '<div class="month-chart-tooltip-row"><span><span class="legend-dot capital"></span>капитал</span>' +
+            '<b>' + (b.capital_incomplete ? '~ ' : '') + fmtEq(b.capital_eq) + '</b></div>';
+        }
       }
       if (medians) {
         rows +=
@@ -2994,6 +3031,7 @@
       })
       .join('');
     var hasBalanceLine = dynBalances.length === dynMonths.length;
+    var hasCapital = hasBalanceLine && hasCapitalLine(dynBalances); // см. renderOverviewMonthlyChart
     // Медиана — тот же приём и та же общая пара renderMedianLines/
     // wireMonthlyChartCrosshair, что и на "Обзоре" (см. её раздел выше), по
     // ВСЕМУ окну графика целиком (текущий период + приглушённый период
@@ -3010,6 +3048,7 @@
       '<div class="chart-legend"><span><span class="legend-dot expense"></span>расход</span>' +
       '<span><span class="legend-dot income"></span>доход</span>' +
       (hasBalanceLine ? '<span><span class="legend-dot balance"></span>остаток на конец периода</span>' : '') +
+      (hasCapital ? CAPITAL_LEGEND_HTML : '') +
       (hasMedianLines
         ? '<span><span class="legend-line expense"></span>медиана расхода</span>' +
           '<span><span class="legend-line income"></span>медиана дохода</span>'
@@ -3033,6 +3072,7 @@
     var chartEl = el.querySelector('.month-chart');
     thinAxisLabels(chartEl); // ДО оверлеев — см. renderOverviewMonthlyChart
     if (hasBalanceLine) renderMonthlyBalanceLine(chartEl, '.dyn-bar-col', dynMonths, dynBalances);
+    if (hasCapital) renderMonthlyBalanceLine(chartEl, '.dyn-bar-col', dynMonths, dynBalances, 'capital_eq', 'capital');
     if (hasMedianLines) {
       renderMedianLines(
         chartEl, '.dyn-bar-col',
@@ -3439,6 +3479,7 @@
     refreshOperations();
     refreshCategories();
     refreshWalletBalances();
+    refreshCapital();
   }
 
   // "Список операций" (Design/.../Отчёты - веб (офлайн).html, вид 'ops') —
@@ -3473,6 +3514,35 @@
   ];
 
   var OPS_TYPES = [['all', 'Все'], ['expense', 'Расход'], ['income', 'Доход'], ['transfer', 'Переводы']];
+
+  // Переоценка капитального актива (kind 'revaluation', change capital-assets):
+  // пятый вариант переключателя — только если среди ЗАГРУЖЕННЫХ строк есть
+  // хотя бы одна переоценка; на леджере без активов переключатель прежний.
+  function opsTypes() {
+    var hasReval = opsAll.some(function (r) { return r.kind === 'revaluation'; });
+    return hasReval || opsState.type === 'revaluation'
+      ? OPS_TYPES.concat([['revaluation', 'Переоценка']])
+      : OPS_TYPES;
+  }
+
+  // Знак суммы строки: расход «−», доход «+»; переоценка — по направлению
+  // (зачисление на актив, to_uuid === wallet_uuid, — вверх, «+»; списание с
+  // актива — вниз, «−»); у перевода знака нет.
+  function opsRowSign(r) {
+    if (r.kind === 'expense') return '−';
+    if (r.kind === 'income') return '+';
+    if (r.kind === 'revaluation') return r.to_uuid === r.wallet_uuid ? '+' : '−';
+    return '';
+  }
+
+  // Название строки, когда нет комментария: перевод — «A → B», переоценка —
+  // «Переоценка: <актив>», иначе — категория.
+  function opsRowTitle(r) {
+    if (r.comment) return r.comment;
+    if (r.kind === 'transfer') return r.from_name + ' → ' + r.to_name;
+    if (r.kind === 'revaluation') return 'Переоценка: ' + r.wallet_name;
+    return r.category_name;
+  }
 
   // Операции ВСЕХ уже загруженных страниц (как пришли от сервера, ORDER BY
   // date DESC — тот же порядок, что в SQL, второй раз здесь НЕ сортируется,
@@ -3573,14 +3643,17 @@
   // чисто на CSS, без картинки.
   function opsRowIconHtml(r) {
     if (r.kind === 'transfer') return '<span class="ops-row-icon ops-row-icon-transfer">⇄</span>';
+    if (r.kind === 'revaluation') return '<span class="ops-row-icon ops-row-icon-transfer">⇅</span>';
     return categoryIconHtml(r.icon_sha256, 'ops-row-icon');
   }
 
   function opsRowHtml(r) {
-    var name = r.comment ? r.comment : (r.kind === 'transfer' ? r.from_name + ' → ' + r.to_name : r.category_name);
-    var sub = r.kind === 'transfer' ? (r.from_name + ' → ' + r.to_name) : (r.category_name + ' · ' + r.wallet_name);
+    var name = opsRowTitle(r);
+    var sub = r.kind === 'transfer' ? (r.from_name + ' → ' + r.to_name)
+      : r.kind === 'revaluation' ? 'Переоценка · ' + r.wallet_name
+      : (r.category_name + ' · ' + r.wallet_name);
     if (sub === name) sub = ''; // transfer без комментария — не повторять один и тот же "A → B" дважды
-    var sign = r.kind === 'expense' ? '−' : r.kind === 'income' ? '+' : '';
+    var sign = opsRowSign(r);
     return (
       '<div class="ops-row' + (opsState.sel === r.operation_uuid ? ' selected' : '') +
       '" data-ops-action="select-op" data-value="' + r.operation_uuid + '">' +
@@ -3665,7 +3738,7 @@
   function opsFilterSummaryText(filteredCount) {
     var s = opsState;
     var parts = [];
-    var type = OPS_TYPES.filter(function (t) { return t[0] === s.type; })[0];
+    var type = opsTypes().filter(function (t) { return t[0] === s.type; })[0];
     if (type && s.type !== 'all') parts.push(type[1]);
     var cat = s.cat && opsDistinctCategories().filter(function (c) { return c.uuid === s.cat; })[0];
     parts.push(cat ? cat.name : 'Все статьи');
@@ -3678,7 +3751,7 @@
     var el = document.getElementById('ops-filters');
     el.classList.toggle('ops-filters-open', opsFiltersOpen);
     var s = opsState;
-    var typeButtons = OPS_TYPES.map(function (t) {
+    var typeButtons = opsTypes().map(function (t) {
       return (
         '<button type="button" class="ops-seg-btn' + (s.type === t[0] ? ' active' : '') +
         '" data-ops-action="type" data-value="' + t[0] + '">' + escapeHtml(t[1]) + '</button>'
@@ -3793,9 +3866,10 @@
   function opsSelectedHtml(rows) {
     var sel = opsState.sel ? rows.filter(function (r) { return r.operation_uuid === opsState.sel; })[0] : null;
     if (!sel) return '';
-    var name = sel.comment ? sel.comment : (sel.kind === 'transfer' ? sel.from_name + ' → ' + sel.to_name : sel.category_name);
-    var kindLabel = sel.kind === 'expense' ? 'Расход' : sel.kind === 'income' ? 'Доход' : 'Перевод';
-    var sign = sel.kind === 'expense' ? '−' : sel.kind === 'income' ? '+' : '';
+    var name = opsRowTitle(sel);
+    var kindLabel = sel.kind === 'expense' ? 'Расход' : sel.kind === 'income' ? 'Доход'
+      : sel.kind === 'revaluation' ? 'Переоценка' : 'Перевод';
+    var sign = opsRowSign(sel);
     var rows2 = [
       ['Дата', sel.date.slice(8, 10) + ' ' + RU_MONTH_GEN[parseInt(sel.date.slice(5, 7), 10) - 1] + ' ' +
         sel.date.slice(0, 4) + ', ' + sel.date.slice(11, 16)],
@@ -3806,7 +3880,10 @@
     if (sel.comment) rows2.push(['Комментарий', sel.comment]);
     var note = sel.kind === 'transfer'
       ? 'Перевод хранится двумя связанными проводками — по одной на каждый кошелёк, если валюты кошельков различались.'
-      : 'Одна проводка: ' + sel.from_name + ' → ' + sel.to_name + '.';
+      : sel.kind === 'revaluation'
+        ? 'Переоценка меняет оценку актива и не считается ни доходом, ни расходом. Одна проводка: ' +
+          sel.from_name + ' → ' + sel.to_name + '.'
+        : 'Одна проводка: ' + sel.from_name + ' → ' + sel.to_name + '.';
     return (
       '<section class="report-section ops-selected">' +
       '<div class="ops-selected-head">' + opsRowIconHtml(sel) +
@@ -3928,7 +4005,7 @@
       var value = el.getAttribute('data-value');
       // Выбор статьи/кошелька на телефоне сворачивает фильтр обратно — как
       // фильтр периода после «Обновить»: раскрытая панель закрывает список.
-      // Тип — переключатель из четырёх кнопок, его щёлкают подряд — не сворачиваем.
+      // Тип — переключатель из четырёх-пяти кнопок, его щёлкают подряд — не сворачиваем.
       if (action === 'toggle-filters') { opsFiltersOpen = !opsFiltersOpen; }
       else if (action === 'type') { opsState.type = value; opsState.limit = 60; }
       else if (action === 'cat') { opsState.cat = value || null; opsState.limit = 60; opsFiltersOpen = false; }
@@ -4913,10 +4990,28 @@
     return m;
   }
 
-  function walletTagHtml(w, endEq) {
-    if (w.is_archived) return '<span class="wallet-tag wallet-tag-archived">архивный</span>';
-    if (endEq === '') return '<span class="wallet-tag wallet-tag-norate">нет курса</span>';
-    return '';
+  // Капитальные активы (change capital-assets): asset_type строки
+  // wallet-turnover / balance — 1 недвижимость, 2 авто, 3 прочее; null (или
+  // поля нет — старый wallet-report) — ликвидный кошелёк (design D7).
+  var ASSET_TYPE_LABELS = { 1: 'Недвижимость', 2: 'Авто', 3: 'Прочее' };
+
+  function isAssetRow(w) {
+    return w.asset_type !== null && w.asset_type !== undefined;
+  }
+
+  function assetTypeLabel(t) {
+    return ASSET_TYPE_LABELS[t] || ASSET_TYPE_LABELS[3];
+  }
+
+  function walletTagHtml(w, endEq, notInTotal) {
+    var tags = '';
+    if (isAssetRow(w)) {
+      tags += '<span class="wallet-tag wallet-tag-asset">' + assetTypeLabel(w.asset_type).toLowerCase() + '</span>';
+      if (notInTotal) tags += '<span class="wallet-tag wallet-tag-asset-out">не в итоге</span>';
+    }
+    if (w.is_archived) return tags + '<span class="wallet-tag wallet-tag-archived">архивный</span>';
+    if (endEq === '') return tags + '<span class="wallet-tag wallet-tag-norate">нет курса</span>';
+    return tags;
   }
 
   // sparkValues — до 12 чисел (own currency, СТАРЫЕ..НОВЫЕ), высота столбца
@@ -4944,7 +5039,7 @@
       categoryIconHtml(w.icon_sha256, 'wallet-row-icon') +
       '<div class="wallet-row-main">' +
       '<div class="wallet-row-name-line"><span class="wallet-row-name">' + escapeHtml(w.account_name) +
-      '</span>' + walletTagHtml(w, r.endEq) + '</div>' +
+      '</span>' + walletTagHtml(w, r.endEq, r.notInTotal) + '</div>' +
       '<div class="wallet-row-sub">' + escapeHtml(subText) + '</div>' +
       '</div>' +
       '<div class="wallet-spark">' + walletSparkHtml(r.spark) + '</div>' +
@@ -4993,6 +5088,11 @@
         outEqNum: parseFloat(w.turnover_out_eq) || 0,
         endAmt: endAmt, endEq: endEq, endEqNum: endEq === '' ? null : parseFloat(endEq),
         spark: sparkByUuid[w.account_uuid] || [],
+        // Группа — по asset_type строки wallet-turnover (там все кошельки,
+        // и без движения); «не в итоге» — include_in_net_worth строки того же
+        // счёта в блоке на конец (design D2): нет строки — нет тега.
+        isAsset: isAssetRow(w),
+        notInTotal: !!endRow && endRow.include_in_net_worth === false,
       };
     });
   }
@@ -5057,7 +5157,15 @@
       el.innerHTML = '<p class="wallet-empty">Ничего не найдено по запросу «' + escapeHtml(walletQuery.trim()) + '».</p>';
       return;
     }
-    el.innerHTML = sortWalletRows(filtered).map(walletRowHtml).join('');
+    // Капитальные активы — отдельной группой «Капитал» после ликвидных;
+    // сортировка и поиск действуют внутри каждой группы, пустая группа не
+    // показывается (в том числе её заголовок).
+    var liquid = filtered.filter(function (r) { return !r.isAsset; });
+    var assets = filtered.filter(function (r) { return r.isAsset; });
+    el.innerHTML = sortWalletRows(liquid).map(walletRowHtml).join('') +
+      (assets.length
+        ? '<div class="wallet-group-head">Капитал</div>' + sortWalletRows(assets).map(walletRowHtml).join('')
+        : '');
   }
 
   function renderWalletKpis(balStart, balEnd, wallets) {
@@ -5067,14 +5175,29 @@
     // уже посчитанных сервером сумм для показа стрелки/подписи, не для
     // хранения или дальнейшего суммирования денег (см. reports_repo.hpp,
     // "деньги — numeric").
+    // total_eq с парным change wallet-report capital-assets — только
+    // ликвидные кошельки; капитал и «всего с капиталом» — отдельные поля
+    // ответа (design D1), в браузере не суммируются.
     var delta = parseFloat(balEnd.total_eq) - parseFloat(balStart.total_eq);
     var deltaSub = (delta >= 0 ? 'выросло на ' : 'уменьшилось на ') + fmtEq(Math.abs(delta).toFixed(2));
-    var activeCount = wallets.filter(function (w) { return !w.is_archived; }).length;
-    var archivedCount = wallets.length - activeCount;
+    var hasAssets = wallets.some(isAssetRow);
+    var liquid = wallets.filter(function (w) { return !isAssetRow(w); });
+    var activeCount = liquid.filter(function (w) { return !w.is_archived; }).length;
+    var archivedCount = liquid.length - activeCount;
+
+    var firstTiles = hasAssets
+      ? kpiTileHtml('Ликвидные', (balEnd.incomplete ? '~ ' : '') + fmtEq(balEnd.total_eq), '',
+          'эквивалент в ' + eqCurrencySymbol() + ' на конец периода, без капитала') +
+        kpiTileHtml('Капитал', (balEnd.capital_incomplete ? '~ ' : '') + fmtEq(balEnd.capital_eq || '0'), '',
+          'оценка активов на конец периода') +
+        kpiTileHtml('Всего с капиталом',
+          (balEnd.incomplete || balEnd.capital_incomplete ? '~ ' : '') + fmtEq(balEnd.net_worth_eq || balEnd.total_eq), '',
+          'ликвидные и капитал')
+      : kpiTileHtml('Всего в кошельках', (balEnd.incomplete ? '~ ' : '') + fmtEq(balEnd.total_eq), '',
+          'эквивалент в ' + eqCurrencySymbol() + ' на конец периода');
 
     el.innerHTML =
-      kpiTileHtml('Всего в кошельках', (balEnd.incomplete ? '~ ' : '') + fmtEq(balEnd.total_eq), '',
-        'эквивалент в ' + eqCurrencySymbol() + ' на конец периода') +
+      firstTiles +
       kpiTileHtml('На начало периода', (balStart.incomplete ? '~ ' : '') + fmtEq(balStart.total_eq), '', deltaSub) +
       kpiTileHtml('Активных кошельков', String(activeCount), '',
         archivedCount ? 'и ' + archivedCount + ' архивный, считается наравне' : 'архивных нет');
@@ -5122,7 +5245,9 @@
     var order = [];
     var groups = {};
     wallets.forEach(function (w) {
-      if (w.is_archived) return;
+      // Капитальные активы в «Состояние по валюте» не входят: база доли —
+      // total_eq, а он с capital-assets только ликвидные.
+      if (w.is_archived || isAssetRow(w)) return;
       var g = groups[w.currency_uuid];
       if (!g) {
         g = groups[w.currency_uuid] = {
@@ -5334,6 +5459,143 @@
         renderWalletRowsFromCache();
       });
     }
+  }
+
+  // --- "Капитал" (view 'cap', change capital-assets) ----------------------
+  // Капитальные активы — кошельки с отметкой «Капитальный актив» (квартира,
+  // машина, прочее; заводятся на телефоне). Источник — GET /api/reports/assets
+  // (wallet-report, reportAssets): по активу вложено, переоценка всего и за
+  // период, оценка на конец и доходность — всё посчитано сервером.
+  //
+  // Архивные активы (проданные) экран не показывает ни в таблице, ни в
+  // плитках, поэтому плитки — сумма *_eq НЕархивных строк, а не итоги ответа
+  // (те — по всем активам). Строки уже округлены сервером, так что сумма
+  // строк совпадает с его итогом, когда архивных нет. 404 — wallet-report ещё
+  // без ручки (design D7): пустой экран, не ошибка.
+  var capitalEqCurrencyUuid = ''; // eq_currency_uuid ответа — formatEqAmount сравнивает с ним валюту актива
+  var capitalEqDecimals = 2; // знаков у эквивалента — по строке итога ответа (precision валюты эквивалента)
+
+  function capitalSignedEq(numStr) {
+    var v = parseFloat(numStr) || 0;
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + fmtEq(Math.abs(v).toFixed(capitalEqDecimals));
+  }
+
+  function capitalSignedNative(numStr, symbol) {
+    var v = parseFloat(numStr) || 0;
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + fmtNative(String(numStr).replace(/^-/, ''), symbol);
+  }
+
+  function capitalEmptyHtml() {
+    return '<p class="wallet-empty">Капитальных активов пока нет.<br>' +
+      'Актив заводится в приложении на телефоне: кошелёк с отметкой «Капитальный актив».</p>';
+  }
+
+  function capitalSum(rows, field) {
+    var sum = 0, incomplete = false;
+    rows.forEach(function (r) {
+      if (r[field] === null || r[field] === undefined || r[field] === '') incomplete = true;
+      else sum += parseFloat(r[field]);
+    });
+    return { value: sum.toFixed(capitalEqDecimals), incomplete: incomplete };
+  }
+
+  function renderCapitalKpis(rows) {
+    var el = document.getElementById('capital-kpis');
+    var value = capitalSum(rows, 'value_eq');
+    var invested = capitalSum(rows, 'invested_eq');
+    var rt = capitalSum(rows, 'revaluation_total_eq');
+    var rp = capitalSum(rows, 'revaluation_period_eq');
+    el.innerHTML =
+      kpiTileHtml('Капитал', (value.incomplete ? '~ ' : '') + fmtEq(value.value), '', 'оценка на конец периода') +
+      kpiTileHtml('Вложено', (invested.incomplete ? '~ ' : '') + fmtEq(invested.value), '',
+        'переводы в активы минус выводы') +
+      kpiTileHtml('Переоценка', (rt.incomplete ? '~ ' : '') + capitalSignedEq(rt.value), '',
+        'за период: ' + (rp.incomplete ? '~ ' : '') + capitalSignedEq(rp.value));
+  }
+
+  function capitalRowHtml(r) {
+    var period = parseFloat(r.revaluation_period)
+      ? capitalSignedNative(r.revaluation_period, r.symbol) : '—';
+    var pct = r.return_pct === null || r.return_pct === undefined ? '—'
+      : (parseFloat(r.return_pct) > 0 ? '+' : parseFloat(r.return_pct) < 0 ? '−' : '') +
+        String(r.return_pct).replace(/^-/, '') + ' %';
+    var pctCls = parseFloat(r.return_pct) > 0 ? ' capital-up' : parseFloat(r.return_pct) < 0 ? ' capital-down' : '';
+    return (
+      '<div class="capital-row" data-asset-uuid="' + r.account_uuid + '">' +
+      categoryIconHtml(r.icon_sha256, 'wallet-row-icon') +
+      '<div class="wallet-row-main">' +
+      '<div class="wallet-row-name-line"><span class="wallet-row-name">' + escapeHtml(r.account_name) + '</span>' +
+      (r.include_in_net_worth === false ? '<span class="wallet-tag wallet-tag-asset-out">не в итоге</span>' : '') +
+      '</div>' +
+      '<div class="wallet-row-sub">' + assetTypeLabel(r.asset_type) + ' · ' + escapeHtml(r.symbol) + '</div>' +
+      '</div>' +
+      '<div class="wallet-col-amount capital-col-wide">' + fmtNative(r.invested, r.symbol) + '</div>' +
+      '<div class="wallet-col-amount capital-col-wide">' + capitalSignedNative(r.revaluation_total, r.symbol) + '</div>' +
+      '<div class="wallet-col-amount capital-col-wide">' + period + '</div>' +
+      '<div class="wallet-col-end">' +
+      '<div>' + fmtNative(r.value, r.symbol) + '</div>' +
+      '<div class="wallet-col-eq">' +
+      formatEqAmount(r.currency_uuid, capitalEqCurrencyUuid, r.value_eq === null ? '' : r.value_eq) + '</div>' +
+      '</div>' +
+      '<div class="capital-col-pct' + pctCls + '">' + pct + '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderCapital(data) {
+    var kpisEl = document.getElementById('capital-kpis');
+    var tableEl = document.getElementById('capital-table');
+    capitalEqCurrencyUuid = data.eq_currency_uuid;
+    capitalEqDecimals = (String(data.value_eq).split('.')[1] || '').length;
+    // Порядок — сервер (value_eq убыв., NULLS LAST, затем имя).
+    var capitalRows = data.assets.filter(function (r) { return !r.is_archived; });
+    if (!capitalRows.length) {
+      kpisEl.innerHTML = '';
+      tableEl.innerHTML = capitalEmptyHtml();
+      return;
+    }
+    renderCapitalKpis(capitalRows);
+    tableEl.innerHTML =
+      '<div class="capital-table-head">' +
+      '<span></span><span>Актив</span>' +
+      '<span class="capital-col-wide">Вложено</span>' +
+      '<span class="capital-col-wide">Переоценка</span>' +
+      '<span class="capital-col-wide">За период</span>' +
+      '<span>Оценка</span><span>Доходность</span>' +
+      '</div>' +
+      capitalRows.map(capitalRowHtml).join('');
+  }
+
+  function refreshCapital() {
+    var kpisEl = document.getElementById('capital-kpis');
+    var tableEl = document.getElementById('capital-table');
+    if (!kpisEl) return; // вкладка 'cap' ещё не построена
+    kpisEl.innerHTML = '<p class="sub">Загрузка…</p>';
+    tableEl.innerHTML = '';
+    var fromStr = document.getElementById('period-from').value;
+    var toStr = document.getElementById('period-to').value;
+    fetchReport('assets', { from: fromStr + 'T00:00:00', to: toStr + 'T23:59:59', eq_currency: eqCurrencyValue() })
+      .then(function (data) { if (data) renderCapital(data); }) // null — 401, renderLogin() уже вызван
+      .catch(function (err) {
+        if (err.status === 404) {
+          kpisEl.innerHTML = '';
+          tableEl.innerHTML = capitalEmptyHtml();
+          return;
+        }
+        kpisEl.innerHTML = reportsErrorHtml('Не удалось загрузить капитал: ' + err.message);
+        tableEl.innerHTML = '';
+      });
+  }
+
+  // Клик по активу — «Список операций» того же периода с фильтром по нему
+  // (вложения и переоценки), тот же путь с «← Назад», что у кошелька.
+  function wireCapitalEvents() {
+    var tableEl = document.getElementById('capital-table');
+    if (!tableEl) return;
+    tableEl.addEventListener('click', function (ev) {
+      var row = ev.target.closest('[data-asset-uuid]');
+      if (row) goToOperationsForWallet(row.getAttribute('data-asset-uuid'));
+    });
   }
 
   // --- "Доступ и приглашения" (view 'acc') --------------------------------
@@ -9191,6 +9453,7 @@
     ] },
     { group: 'Кошелёк', items: [
         ['wal', 'Кошельки и остатки', true],
+        ['cap', 'Капитал', true],
         ['cur', 'Курсы валют', true],
         ['acc', 'Доступ и приглашения', true],
         ['icons', 'Иконки', true],
@@ -9204,7 +9467,7 @@
   // parseReportsHash (что можно восстановить из hash при F5). Раньше это
   // был буквальный литерал в обоих местах — вынесен один раз, чтобы
   // добавление вкладки не значило править два места по отдельности.
-  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cur', 'acc', 'icons', 'ai'];
+  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cap', 'cur', 'acc', 'icons', 'ai'];
 
   // Нижняя панель вкладок мобильной раскладки (по прямому запросу — "меню
   // неудобное: открыл — занимает много места, надо прятать ещё одним нажатием").
@@ -9249,6 +9512,7 @@
     dyn: ['Динамика', 'Расход и доход период за периодом, выбранный бакет — по категориям'],
     cats: ['Категории во времени', 'Крупнейшие категории расхода — тренд по выбранному периоду'],
     wal: ['Кошельки и остатки', 'Где лежат деньги: остаток каждого счёта, обороты за период и валюты'],
+    cap: ['Капитал', 'Во что вложены деньги и как менялась оценка'],
     cur: ['Курсы валют', 'Валютные пары и история их курса — добавление, изменение и удаление вручную'],
     acc: ['Доступ и приглашения', 'Кто видит этот кошелёк и как пригласить ещё одного человека'],
     icons: ['Иконки', 'Все иконки, доступные этому кошельку: общий набор и добавленные вами'],
@@ -9920,6 +10184,10 @@
       '<div class="wallet-currencies-grid" id="wallet-currencies"></div>' +
       '</section>' +
       '</div>' +
+      '<div id="view-cap" hidden>' +
+      '<div class="kpi-grid" id="capital-kpis"><p class="sub">Загрузка…</p></div>' +
+      '<section class="report-section"><div id="capital-table"></div></section>' +
+      '</div>' +
       '<div id="view-cur" hidden>' +
       '<div id="cur-root"><p class="sub">Загрузка…</p></div>' +
       // Вне #cur-root (currency-form-ux D2): renderCurList его не пересоздаёт.
@@ -10021,6 +10289,7 @@
     wireOpsInfiniteScroll();
     wireCatsEvents();
     wireWalletEvents();
+    wireCapitalEvents();
     wireCurEvents();
     wireAccessEvents();
 
