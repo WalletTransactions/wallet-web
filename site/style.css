@@ -1451,6 +1451,26 @@ tr.device-current { background: var(--sand2); }
   .ai-status .btn { margin-left: 0; }
 }
 
+/* «Справка» (app.js::renderDocsRoot, docs-assistant): поле и строка кнопки —
+   те же .ai-input/.ai-input-row, «Ищу ответ…» и ошибки — .ai-status. Ответ —
+   простой текст (pre-wrap держит переносы строк LLM), длинный — прокрутка
+   внутри карточки, а не всей страницы; overflow-wrap — против длинных
+   путей и идентификаторов, иначе на 390px появляется прокрутка вбок. */
+.docs-ask { max-width: 760px; }
+.docs-answer {
+  margin-top: 14px; padding: 16px 20px; background: var(--surf); border-radius: 18px; box-shadow: var(--sh);
+  max-height: 60vh; overflow-y: auto; overflow-wrap: anywhere;
+}
+.docs-answer-text { margin: 0; font-size: 15px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; }
+.docs-sources { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--l10); }
+.docs-sources-label { font-size: 12px; font-weight: 700; color: var(--ink4); text-transform: uppercase; letter-spacing: .04em; }
+.docs-sources ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink3); }
+.docs-sources li { margin: 2px 0; }
+
+@media (max-width: 700px) {
+  .docs-answer { padding: 14px 16px; max-height: none; overflow-y: visible; } /* на телефоне вложенная прокрутка мешает — листается вся страница */
+}
+
 /* «ИИ» → «Импорт выписки» (app.js::stRender, add-ai-statement-import):
    форма, список импортов, «Мои форматы» и экран проверки. Строка проверки —
    одна разметка на CSS grid (D7): от 700px — колонки таблицы, уже —
