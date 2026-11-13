@@ -7292,6 +7292,207 @@
       });
   }
 
+  // --- «Справка» (view 'docs', docs-assistant) ------------------------------
+  // Вопрос своими словами → POST /api/docs/ask (wallet-docs через гейтвей) →
+  // ответ текстом и «Источники». Пункт — по образцу «ИИ» (D1): виден только
+  // при 200 на GET /api/docs/status, статус один раз при открытии «Отчётов»,
+  // в режиме «Посмотреть как клиент» не запрашивается (D5) — токен
+  // администраторский, ответ показал бы всю систему под видом клиента.
+  // Область документации выбирает сервер по role/platform токена; клиент о
+  // себе ничего не сообщает.
+  //
+  // docsStatus: null — ответа ещё нет, true/false — пункт показан/скрыт.
+  // docsRestorePending — то же, что aiRestorePending: F5 на #/reports/docs
+  // раньше ответа статуса.
+  // Вопрос и ответ живут только здесь, в памяти: уход с экрана (docsReset из
+  // switchReportsView), закрытие «Отчётов» и F5 их стирают — так по спеке.
+  var DOCS_QUESTION_MAX = 1000;
+  var docsStatus = null;
+  var docsRestorePending = false;
+  var docsQuestion = '';
+  var docsBusy = false;
+  var docsAttempt = 0; // токен запроса: ответ после ухода с экрана выбрасывается
+  var docsResult = null; // { answer, sources } из POST /api/docs/ask
+  var docsError = '';
+
+  function setDocsNavVisible(visible) {
+    var group = document.getElementById('nav-group-docs');
+    if (group) group.hidden = !visible;
+  }
+
+  function refreshDocsStatus() {
+    docsStatus = null;
+    docsRestorePending = false;
+    setDocsNavVisible(false);
+    if (viewAsUser) {
+      docsStatus = false;
+      return;
+    }
+    apiFetch('/api/docs/status', { credentials: 'include' })
+      .then(function (res) {
+        // 404 — wallet-docs не подключён к гейтвею, 401/403/5xx — недоступен
+        // этому пользователю. Повторов нет (D2): до следующего открытия «Отчётов».
+        if (res.status !== 200) return null;
+        return res.json().catch(function () { return null; });
+      }, function () {
+        return null; // сеть
+      })
+      .then(function (data) {
+        if (!document.getElementById('nav-group-docs')) return; // «Отчёты» уже закрыты
+        var enabled = !!data && data.enabled === true;
+        docsStatus = enabled;
+        setDocsNavVisible(enabled);
+        if (enabled && docsRestorePending && reportsView === 'over') {
+          isApplyingHistoryState = true;
+          switchReportsView('docs');
+          isApplyingHistoryState = false;
+          replaceReportsUrlState('docs');
+        }
+        docsRestorePending = false;
+      });
+  }
+
+  // Ушли с экрана — вопрос, ответ и запрос в полёте забываются.
+  function docsReset() {
+    docsAttempt++;
+    docsQuestion = '';
+    docsBusy = false;
+    docsResult = null;
+    docsError = '';
+    renderDocsRoot();
+  }
+
+  // Подпись источника (D4): роль — подсказка отображения, доступ к спекам
+  // решает сервер. У администратора область — вся система, поэтому имя
+  // репозитория нужно; остальным оно ничего не скажет. Повторы (несколько
+  // фрагментов одного раздела) схлопываются, порядок — как у сервера.
+  function docsSourceLines(sources) {
+    var isAdmin = !!currentUser && currentUser.role === 'admin';
+    var seen = {};
+    var lines = [];
+    (sources || []).forEach(function (s) {
+      if (!s || !s.capability) return;
+      var line = isAdmin && s.repo ? s.repo + ' · ' + s.capability : s.capability;
+      if (seen[line]) return;
+      seen[line] = true;
+      lines.push(line);
+    });
+    return lines;
+  }
+
+  // Форма рисуется один раз за заход на экран, дальше меняется только
+  // #docs-result и доступность кнопки — фокус и курсор в поле не теряются.
+  function renderDocsRoot() {
+    var root = document.getElementById('docs-root');
+    if (!root) return;
+    root.innerHTML =
+      '<section class="report-section ai-input docs-ask">' +
+      '<textarea id="docs-question" rows="3" maxlength="' + DOCS_QUESTION_MAX + '" ' +
+      'placeholder="Ваш вопрос…" aria-label="Ваш вопрос">' + escapeHtml(docsQuestion) + '</textarea>' +
+      '<div class="ai-input-row">' +
+      '<span class="ai-counter">Ctrl+Enter — спросить</span>' +
+      '<button type="button" class="btn" id="docs-ask-btn">Спросить</button>' +
+      '</div>' +
+      '<div id="docs-result" aria-live="polite"></div>' +
+      '</section>';
+    var textEl = document.getElementById('docs-question');
+    textEl.addEventListener('input', function () {
+      docsQuestion = textEl.value;
+      docsUpdateButton();
+    });
+    // Enter — перенос строки (вопрос бывает в несколько строк), Ctrl/⌘+Enter — отправить.
+    textEl.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey) && !ev.isComposing) {
+        ev.preventDefault();
+        docsAsk();
+      }
+    });
+    document.getElementById('docs-ask-btn').addEventListener('click', docsAsk);
+    docsUpdateButton();
+    renderDocsResult();
+  }
+
+  function docsUpdateButton() {
+    var btn = document.getElementById('docs-ask-btn');
+    if (btn) btn.disabled = docsBusy || !docsQuestion.trim();
+  }
+
+  // Ответ и сообщения — только через textContent/escapeHtml (D3): текст из
+  // индекса спек и сам вопрос не должны исполниться как разметка.
+  function renderDocsResult() {
+    var box = document.getElementById('docs-result');
+    if (!box) return;
+    if (docsBusy) {
+      box.innerHTML = '<div class="ai-status"><span class="ai-spinner" aria-hidden="true"></span>Ищу ответ…</div>';
+      return;
+    }
+    if (docsError) {
+      box.innerHTML = '<div class="ai-status ai-status-fail" role="alert"></div>';
+      box.firstChild.textContent = docsError;
+      return;
+    }
+    if (!docsResult) {
+      box.innerHTML = '';
+      return;
+    }
+    var lines = docsSourceLines(docsResult.sources);
+    box.innerHTML =
+      '<div class="docs-answer">' +
+      '<p class="docs-answer-text" id="docs-answer-text"></p>' +
+      (lines.length
+        ? '<div class="docs-sources"><div class="docs-sources-label">Источники</div><ul>' +
+          lines.map(function (l) { return '<li>' + escapeHtml(l) + '</li>'; }).join('') +
+          '</ul></div>'
+        : '') +
+      '</div>';
+    document.getElementById('docs-answer-text').textContent = docsResult.answer;
+  }
+
+  // Текст ошибки по ответу сервиса. 401 сюда приходит уже после попытки
+  // тихого /auth/refresh в apiFetch; на экран входа не уводим — вопрос
+  // должен остаться в поле.
+  function docsErrorMessage(status, data) {
+    if (status === 401) return 'Сессия истекла, войдите заново';
+    if (status === 400) return (data && data.error) || 'Неверный вопрос';
+    if (status === 429) return 'Слишком много вопросов подряд. Подождите минуту.';
+    return 'Сервис ответов недоступен'; // 404/502/503 и всё прочее
+  }
+
+  function docsAsk() {
+    var question = docsQuestion.trim();
+    if (docsBusy || !question) return;
+    var attempt = ++docsAttempt;
+    docsBusy = true;
+    docsError = '';
+    docsResult = null;
+    docsUpdateButton();
+    renderDocsResult();
+    function finish(result, error) {
+      if (attempt !== docsAttempt) return; // ушли с экрана или закрыли «Отчёты»
+      docsBusy = false;
+      docsResult = result;
+      docsError = error;
+      docsUpdateButton();
+      renderDocsResult();
+    }
+    apiFetch('/api/docs/ask', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: question }),
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (data) {
+        if (res.status === 200 && data && typeof data.answer === 'string') {
+          finish({ answer: data.answer, sources: Array.isArray(data.sources) ? data.sources : [] }, '');
+        } else {
+          finish(null, docsErrorMessage(res.status === 200 ? 502 : res.status, data));
+        }
+      });
+    }, function () {
+      finish(null, 'Нет связи. Попробуйте позже.');
+    });
+  }
+
   // --- «ИИ» → «Трата своими словами» ---------------------------------------
   // Текст → задание parse_expense в wallet-ai → карточка черновика → запись
   // операции в wallet-api (POST /sync/push), тем же путём, что телефон и бот.
@@ -9460,6 +9661,8 @@
     ] },
     // id — группа скрыта, пока не ответил GET /api/ai/status (см. refreshAiStatus).
     { group: 'ИИ', id: 'nav-group-ai', items: [['ai', 'ИИ', true]] },
+    // Так же скрыта до GET /api/docs/status (см. refreshDocsStatus).
+    { group: 'Справка', id: 'nav-group-docs', items: [['docs', 'Справка', true]] },
   ];
 
   // Экраны, реально построенные в разметке renderReports() (см. ниже) —
@@ -9467,7 +9670,7 @@
   // parseReportsHash (что можно восстановить из hash при F5). Раньше это
   // был буквальный литерал в обоих местах — вынесен один раз, чтобы
   // добавление вкладки не значило править два места по отдельности.
-  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cap', 'cur', 'acc', 'icons', 'ai'];
+  var REPORTS_BUILT_VIEWS = ['over', 'ops', 'struct', 'dyn', 'cats', 'wal', 'cap', 'cur', 'acc', 'icons', 'ai', 'docs'];
 
   // Нижняя панель вкладок мобильной раскладки (по прямому запросу — "меню
   // неудобное: открыл — занимает много места, надо прятать ещё одним нажатием").
@@ -9500,7 +9703,7 @@
   // Вкладки, не зависящие ни от периода, ни от валюты эквивалента (см.
   // refreshCurrencyPairs/refreshAccess/refreshIcons — зовутся вне
   // refreshPeriod) — на них фильтр в шапке скрыт (switchReportsView).
-  var PERIOD_FREE_VIEWS = ['cur', 'acc', 'icons', 'ai'];
+  var PERIOD_FREE_VIEWS = ['cur', 'acc', 'icons', 'ai', 'docs'];
 
   // Заголовок/подзаголовок каждого пункта — то же TITLES из дизайна, но
   // текстом только у реализованных: у отключённых пунктов заголовок никогда
@@ -9517,6 +9720,7 @@
     acc: ['Доступ и приглашения', 'Кто видит этот кошелёк и как пригласить ещё одного человека'],
     icons: ['Иконки', 'Все иконки, доступные этому кошельку: общий набор и добавленные вами'],
     ai: ['ИИ', 'Трата своими словами и импорт выписки банка — проверьте и запишите'],
+    docs: ['Справка', 'Спросите своими словами, как устроено приложение, — ответ по его описанию'],
   };
 
   // Текущий пункт навигации — модульная переменная (тот же приём, что и
@@ -9715,12 +9919,21 @@
     // "ИИ" скрыт (или статус ещё не пришёл) — прямая ссылка, F5 и
     // "Назад"/"Вперёд" на него открывают "Обзор". Пока статуса нет, просьбу
     // запоминаем: refreshAiStatus переключит, если ИИ окажется включён.
+    // То же для «Справки» (refreshDocsStatus).
     if (view === 'ai' && aiStatus !== true) {
       aiRestorePending = aiStatus === null;
+      docsRestorePending = false;
+      view = 'over';
+    } else if (view === 'docs' && docsStatus !== true) {
+      docsRestorePending = docsStatus === null;
+      aiRestorePending = false;
       view = 'over';
     } else if (view !== 'over') {
       aiRestorePending = false; // пользователь ушёл сам — не перебивать его выбор
+      docsRestorePending = false;
     }
+    // Ушли со «Справки» — вопрос и ответ не хранятся (спека docs-assistant).
+    if (reportsView === 'docs' && view !== 'docs') docsReset();
     // Ушли с "ИИ" посреди разбора — задание снимается, текст остаётся в поле.
     if (reportsView === 'ai' && view !== 'ai' && aiPhase === 'parsing') {
       aiCancelParsing();
@@ -10213,6 +10426,9 @@
       '<div id="ai-root"></div>' +
       '<div id="st-root"></div>' +
       '</div>' +
+      '<div id="view-docs" hidden>' +
+      '<div id="docs-root"></div>' +
+      '</div>' +
       '</div>' +
       '</main>' +
       mobileTabbarHtml() +
@@ -10369,6 +10585,10 @@
     refreshIcons();
     renderAiRoot();
     refreshAiStatus();
+    // Новое открытие «Отчётов» — новый экран «Справки»: прежний вопрос и
+    // ответ (и запрос в полёте) не переживают закрытие.
+    docsReset();
+    refreshDocsStatus();
     updateOpsSidebarStickyOffset();
     wireOpsSidebarStickyResize();
   }
