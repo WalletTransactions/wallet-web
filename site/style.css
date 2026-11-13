@@ -1461,7 +1461,40 @@ tr.device-current { background: var(--sand2); }
   margin-top: 14px; padding: 16px 20px; background: var(--surf); border-radius: 18px; box-shadow: var(--sh);
   max-height: 60vh; overflow-y: auto; overflow-wrap: anywhere;
 }
-.docs-answer-text { margin: 0; font-size: 15px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; }
+/* Разметка ответа (docsMarkdownHtml): заголовки # → h3…h6, отступы — только
+   между блоками, первый и последний без внешних полей. */
+.docs-answer-text { font-size: 15px; line-height: 1.55; color: var(--ink); }
+.docs-answer-text > :first-child { margin-top: 0; }
+.docs-answer-text > :last-child { margin-bottom: 0; }
+.docs-answer-text p { margin: 0 0 10px; }
+.docs-answer-text h3, .docs-answer-text h4, .docs-answer-text h5, .docs-answer-text h6 {
+  margin: 18px 0 8px; color: var(--ink); line-height: 1.3;
+  text-transform: none; letter-spacing: normal; font-weight: 700; /* общий h3 сайта — капсом, для текста ответа не годится */
+}
+.docs-answer-text h3 { font-size: 18px; }
+.docs-answer-text h4 { font-size: 16px; }
+.docs-answer-text h5, .docs-answer-text h6 { font-size: 15px; }
+.docs-answer-text ul, .docs-answer-text ol { margin: 0 0 10px; padding-left: 22px; }
+.docs-answer-text li { margin: 3px 0; }
+.docs-answer-text strong { font-weight: 700; }
+.docs-answer-text code {
+  padding: 1px 6px; border-radius: 6px; background: var(--sand2); color: var(--ink2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em;
+}
+.docs-answer-text pre {
+  margin: 0 0 10px; padding: 12px 14px; border-radius: 12px; background: var(--sand2); overflow-x: auto;
+  overflow-wrap: normal;
+}
+.docs-answer-text pre code { padding: 0; background: none; font-size: 13px; white-space: pre; }
+.docs-answer-text blockquote {
+  margin: 0 0 10px; padding: 4px 0 4px 14px; border-left: 3px solid var(--l14); color: var(--ink3);
+}
+.docs-answer-text hr { margin: 14px 0; border: 0; border-top: 1px solid var(--l10); }
+.docs-answer-text a { color: var(--acc); }
+.docs-table-wrap { margin: 0 0 10px; overflow-x: auto; overflow-wrap: normal; } /* широкая таблица листается сама, не страница */
+.docs-answer-text table { border-collapse: collapse; font-size: 14px; }
+.docs-answer-text th, .docs-answer-text td { padding: 6px 10px; border: 1px solid var(--l10); text-align: left; vertical-align: top; }
+.docs-answer-text th { background: var(--sand2); font-weight: 700; }
 .docs-sources { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--l10); }
 .docs-sources-label { font-size: 12px; font-weight: 700; color: var(--ink4); text-transform: uppercase; letter-spacing: .04em; }
 .docs-sources ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink3); }
