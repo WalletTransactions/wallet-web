@@ -7380,6 +7380,121 @@
     return lines;
   }
 
+  // --- Markdown ответа «Справки» (D3) ---------------------------------------
+  // Небольшое подмножество, которое пишет LLM: заголовки, абзацы, **жирный**,
+  // *курсив*, `код`, ```блоки```, списки -/*/+ и 1., цитаты >, таблицы |…|,
+  // разделитель ---, ссылки [текст](http…). Правило безопасности одно: любой
+  // кусок исходного текста попадает в HTML только через escapeHtml, теги
+  // ставит сам рендерер. Поэтому <img onerror> из индекса остаётся текстом, а
+  // ссылка — только на http(s) (javascript: и прочее — просто текст).
+  // Вложенные списки уплощаются: для коротких ответов этого достаточно.
+  var DOCS_CODE_OPEN = ''; // символы личного пользования — в ответе их не бывает
+  var DOCS_CODE_CLOSE = '';
+
+  function docsInlineHtml(text) {
+    var codes = [];
+    var s = text.replace(/`([^`\n]+)`/g, function (_, code) {
+      codes.push('<code>' + escapeHtml(code) + '</code>');
+      return DOCS_CODE_OPEN + (codes.length - 1) + DOCS_CODE_CLOSE;
+    });
+    s = escapeHtml(s);
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, function (_, label, url) {
+      return '<a href="' + url.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    });
+    s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+    // __жирный__ — только на границе слова: иначе ловит идентификаторы (window.__x … y.__z).
+    s = s.replace(/(^|[^\w])__(?!\s)([^_\n]+?)__(?!\w)/g, '$1<strong>$2</strong>');
+    // *курсив*: не внутри слова и не «* » (маркер списка разобран раньше).
+    s = s.replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?![*\w])/g, '$1<em>$2</em>');
+    return s.replace(new RegExp(DOCS_CODE_OPEN + '(\\d+)' + DOCS_CODE_CLOSE, 'g'), function (_, i) {
+      return codes[+i];
+    });
+  }
+
+  function docsTableCells(line) {
+    return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return c.trim(); });
+  }
+
+  function docsMarkdownHtml(md) {
+    var lines = String(md).replace(/\r\n?/g, '\n').split('\n');
+    var out = [];
+    var para = [];
+    var quote = [];
+    var list = null; // { tag: 'ul'|'ol', items: [] }
+    function flushPara() {
+      if (para.length) out.push('<p>' + para.map(docsInlineHtml).join('<br>') + '</p>');
+      para = [];
+    }
+    function flushQuote() {
+      if (quote.length) out.push('<blockquote>' + quote.map(docsInlineHtml).join('<br>') + '</blockquote>');
+      quote = [];
+    }
+    function flushList() {
+      if (list) {
+        out.push('<' + list.tag + '>' + list.items.map(function (it) {
+          return '<li>' + docsInlineHtml(it) + '</li>';
+        }).join('') + '</' + list.tag + '>');
+      }
+      list = null;
+    }
+    function flushAll() { flushPara(); flushQuote(); flushList(); }
+    // Старший уровень заголовка в ответе станет h3 (h1/h2 заняты шапкой
+    // страницы): LLM часто начинает с «##», и без сдвига всё было бы мельче.
+    var topLevel = 6;
+    lines.forEach(function (l) {
+      var hm = /^\s{0,3}(#{1,6})\s/.exec(l);
+      if (hm && hm[1].length < topLevel) topLevel = hm[1].length;
+    });
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var m;
+      if (/^\s*```/.test(line)) {
+        flushAll();
+        var code = [];
+        for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(lines[i]);
+        out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>');
+        continue;
+      }
+      if (!line.trim()) { flushAll(); continue; }
+      if ((m = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line))) {
+        flushAll();
+        var h = Math.min(m[1].length - topLevel + 3, 6);
+        out.push('<h' + h + '>' + docsInlineHtml(m[2]) + '</h' + h + '>');
+        continue;
+      }
+      if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flushAll(); out.push('<hr>'); continue; }
+      // Таблица: строка с | и следующая — разделитель |---|:--:|.
+      if (line.indexOf('|') >= 0 && i + 1 < lines.length &&
+          /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+        flushAll();
+        var head = docsTableCells(line);
+        var rows = [];
+        for (i += 2; i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim(); i++) rows.push(docsTableCells(lines[i]));
+        i--;
+        out.push('<div class="docs-table-wrap"><table><thead><tr>' +
+          head.map(function (c) { return '<th>' + docsInlineHtml(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+          rows.map(function (r) {
+            return '<tr>' + r.map(function (c) { return '<td>' + docsInlineHtml(c) + '</td>'; }).join('') + '</tr>';
+          }).join('') + '</tbody></table></div>');
+        continue;
+      }
+      if ((m = /^\s*>\s?(.*)$/.exec(line))) { flushPara(); flushList(); quote.push(m[1]); continue; }
+      if ((m = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(line))) {
+        flushPara(); flushQuote();
+        var tag = /\d/.test(m[1]) ? 'ol' : 'ul';
+        if (!list || list.tag !== tag) { flushList(); list = { tag: tag, items: [] }; }
+        list.items.push(m[2]);
+        continue;
+      }
+      // Продолжение пункта списка — строка с отступом сразу под ним.
+      if (list && /^\s{2,}\S/.test(line)) { list.items[list.items.length - 1] += ' ' + line.trim(); continue; }
+      flushQuote(); flushList();
+      para.push(line.trim());
+    }
+    flushAll();
+    return out.join('');
+  }
+
   // Форма рисуется один раз за заход на экран, дальше меняется только
   // #docs-result и доступность кнопки — фокус и курсор в поле не теряются.
   function renderDocsRoot() {
@@ -7417,8 +7532,8 @@
     if (btn) btn.disabled = docsBusy || !docsQuestion.trim();
   }
 
-  // Ответ и сообщения — только через textContent/escapeHtml (D3): текст из
-  // индекса спек и сам вопрос не должны исполниться как разметка.
+  // Ответ — через docsMarkdownHtml, сообщения — через textContent/escapeHtml
+  // (D3): HTML из индекса спек и сам вопрос не должны исполниться.
   function renderDocsResult() {
     var box = document.getElementById('docs-result');
     if (!box) return;
@@ -7438,14 +7553,13 @@
     var lines = docsSourceLines(docsResult.sources);
     box.innerHTML =
       '<div class="docs-answer">' +
-      '<p class="docs-answer-text" id="docs-answer-text"></p>' +
+      '<div class="docs-answer-text" id="docs-answer-text">' + docsMarkdownHtml(docsResult.answer) + '</div>' +
       (lines.length
         ? '<div class="docs-sources"><div class="docs-sources-label">Источники</div><ul>' +
           lines.map(function (l) { return '<li>' + escapeHtml(l) + '</li>'; }).join('') +
           '</ul></div>'
         : '') +
       '</div>';
-    document.getElementById('docs-answer-text').textContent = docsResult.answer;
   }
 
   // Текст ошибки по ответу сервиса. 401 сюда приходит уже после попытки
