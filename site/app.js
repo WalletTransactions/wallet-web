@@ -352,10 +352,8 @@
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
       '</div>' +
-      '<button type="button" class="btn btn-secondary" id="admin-icons-btn">Иконки</button> ' +
       '<button type="button" class="btn btn-secondary" id="admin-back-btn">Назад</button>';
 
-    document.getElementById('admin-icons-btn').addEventListener('click', renderAdminIcons);
     document.getElementById('admin-back-btn').addEventListener('click', renderReports);
 
     wireAdminTableSorting();
@@ -481,37 +479,35 @@
     });
   }
 
-  // "Иконки" (только Role::Admin, кнопка в renderAdminTable выше) — по
-  // прямому запросу (2026-09-16): общий/эталонный набор иконок (виден всем
-  // леджерам) сразу, плюс выбор пользователя из того же списка, что и
-  // renderAdmin(), чтобы посмотреть его СОБСТВЕННЫЕ иконки (добавленные из
-  // галереи в его леджер — см. wallet-api/schema/table/icon.sql, ledger_id NOT
-  // NULL). GET /api/reports/admin/icons без user_id — только common.
-  function renderAdminIcons() {
-    app.innerHTML = '<p class="sub">Загрузка…</p>';
+  // ---------- «Отчёты» → «Иконки» (icons-tab-management) ----------
+  // Одна вкладка и для просмотра, и для управления общим набором (раньше
+  // управление жило на админском экране под «Списком пользователей»).
+  // Выпадающий список «Показать»: «Свои» (иконки кошелька, как в режиме
+  // «Посмотреть как клиент»), «Общие» и — только админу вне этого режима —
+  // «Чужие» (выбор пользователя, только просмотр). GET /api/reports/icons
+  // грузится один раз при открытии «Отчётов» (fetchReport, общий кэш);
+  // переключение набора запросов не шлёт.
+  var ICON_SIZE = 256; // как хранит телефон (WEBP 256×256, BitmapFactory)
+  var ICON_DUP_NAME = 'Общая иконка с таким названием уже есть.';
 
-    Promise.all([
-      apiJson('/api/reports/admin/icons', { credentials: 'include' }),
-      apiJson('/admin/users', { credentials: 'include' }),
-    ])
-      .then(function (results) {
-        var iconsData = results[0];
-        var usersData = results[1];
-        if (!iconsData || !usersData) return; // 401 — apiJson уже вызвал renderLogin()
-        renderAdminIconsScreen(iconsData.common, usersData.users);
-      })
-      .catch(function (err) {
-        renderError('Не удалось загрузить иконки: ' + err.message);
-      });
+  var iconsSource = 'user'; // 'user' | 'common' | 'others'; переживает перезапрос
+  var iconsData = null;     // {user, common} последнего GET /api/reports/icons
+  var iconsUsers = null;    // null — GET /admin/users ещё не грузили
+  var iconsOtherUserId = '';
+  var iconsOtherSeq = 0;    // отбрасывает ответ про уже не выбранного пользователя
+
+  // Права на запись — тот же признак, что прячет кнопки записи в «Курсах
+  // валют»; сервер всё равно проверяет роль в /api/admin/icons*.
+  function canManageIcons() {
+    return !!currentUser && currentUser.role === 'admin' && !viewAsUser;
   }
 
   // Иконки крупнее, чем в самих отчётах (.cat-icon, 26px) — здесь это не
   // подпись к операции среди текста, а единственное содержимое экрана,
   // "витрина" для просмотра/сверки, крупная картинка полезнее компактной.
-  // opts.editable (только общий набор на админском экране, server-managed-icons)
-  // — у ячейки data-uuid/data-name и кнопки «Переименовать»/«Удалить»;
-  // обработчики — делегированием (wireAdminCommonIconsEvents). Иконки
-  // пользователя и вкладка «Иконки» в «Отчётах» зовут без opts — только просмотр.
+  // opts.editable (только набор «Общие» у админа) — у ячейки data-uuid/
+  // data-name и кнопки «Переименовать»/«Удалить»; обработчики —
+  // делегированием (wireIconsGridEvents). Без opts — только просмотр.
   function iconGridHtml(icons, opts) {
     if (icons.length === 0) return '<p class="wallet-empty">Иконок нет.</p>';
     var editable = !!(opts && opts.editable);
@@ -532,21 +528,6 @@
     );
   }
 
-  // ---------- Общие иконки: запись (server-managed-icons) ----------
-  // Набор ведёт администратор здесь; телефоны его только скачивают
-  // (GET /sync/pull, поток справочников). Ручки — wallet-api,
-  // /api/admin/icons* (тег admin-icons его openapi.yaml), байты картинки —
-  // заранее через POST /sync/blobs. Просмотр (GET /api/reports/admin/icons)
-  // — по-прежнему wallet-report.
-  var ICON_SIZE = 256; // как хранит телефон (WEBP 256×256, BitmapFactory)
-  var ICON_DUP_NAME = 'Общая иконка с таким названием уже есть.';
-
-  // Состояние формы «Добавить иконку»: подготовленная картинка выбранного
-  // файла. iconAddPrepared — Promise<Blob> (reject — не картинка),
-  // iconAddPreviewUrl — objectURL превью (отзывается при смене/очистке).
-  var iconAddPrepared = null;
-  var iconAddPreviewUrl = null;
-
   function adminCommonIconCellHtml(i) {
     return (
       '<div class="icon-admin-cell" data-uuid="' + escapeAttr(i.uuid) + '" data-name="' + escapeAttr(i.name) + '">' +
@@ -559,66 +540,6 @@
       '<p class="icon-admin-err"></p>' +
       '</div>'
     );
-  }
-
-  function iconAddFormHtml() {
-    return (
-      '<form class="icon-add-form" id="icon-add-form" novalidate>' +
-      '<h3>Добавить иконку</h3>' +
-      '<div class="icon-add-row">' +
-      '<div class="icon-add-preview" id="icon-add-preview"></div>' +
-      '<label class="cur-field icon-add-file">Картинка<input type="file" id="icon-add-file" accept="image/*"></label>' +
-      '<label class="cur-field">Название<input type="text" id="icon-add-name" maxlength="64" autocomplete="off"></label>' +
-      '<label class="cur-field">Тип<select id="icon-add-type">' +
-      '<option value="0">Категория</option><option value="1">Флаг</option>' +
-      '</select></label>' +
-      '<button type="submit" class="btn" id="icon-add-btn">Добавить</button>' +
-      '</div>' +
-      '<p class="err icon-add-err" id="icon-add-err"></p>' +
-      '</form>'
-    );
-  }
-
-  // Картинка → квадрат ICON_SIZE×ICON_SIZE: обрезка по центру, WEBP 0.9;
-  // браузер без WEBP-кодировщика (Safari) отдаёт из toBlob PNG — берём
-  // что вернулось. Наружу уходит только результат, не исходный файл.
-  // objectURL, а не FileReader/dataURL: фото с телефона в 10+ МБ не
-  // раздувается в base64-строку в памяти. reject — файл не декодируется.
-  function prepareIconImage(file) {
-    return new Promise(function (resolve, reject) {
-      var url = URL.createObjectURL(file);
-      var img = new Image();
-      img.onload = function () {
-        URL.revokeObjectURL(url);
-        var w = img.naturalWidth, h = img.naturalHeight;
-        var canvas = document.createElement('canvas');
-        canvas.width = ICON_SIZE;
-        canvas.height = ICON_SIZE;
-        var ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        try {
-          if (w > 0 && h > 0) {
-            var s = Math.min(w, h);
-            ctx.drawImage(img, (w - s) / 2, (h - s) / 2, s, s, 0, 0, ICON_SIZE, ICON_SIZE);
-          } else {
-            ctx.drawImage(img, 0, 0, ICON_SIZE, ICON_SIZE); // SVG без собственного размера
-          }
-        } catch (e) {
-          reject(e);
-          return;
-        }
-        canvas.toBlob(function (blob) {
-          if (blob) resolve(blob);
-          else reject(new Error('canvas.toBlob'));
-        }, 'image/webp', 0.9);
-      };
-      img.onerror = function () {
-        URL.revokeObjectURL(url);
-        reject(new Error('not an image'));
-      };
-      img.src = url;
-    });
   }
 
   // Вызов wallet-api для формы/кнопок: 401 — экран входа (null), 204 — {},
@@ -648,52 +569,399 @@
     });
   }
 
-  // Перерисовка ТОЛЬКО раздела «Общие» (#admin-icons-common) — выбранный
-  // пользователь в нижнем разделе и форма «Добавить иконку» не сбрасываются.
-  // Старая сетка остаётся на экране, пока не придёт новая.
-  function refreshAdminCommonIcons() {
-    return apiJson('/api/reports/admin/icons', { credentials: 'include' })
+  function iconsSourceOptionsHtml() {
+    var opts = [
+      ['user', 'Свои (' + iconsData.user.length + ')'],
+      ['common', 'Общие (' + iconsData.common.length + ')'],
+    ];
+    if (canManageIcons()) opts.push(['others', 'Чужие']);
+    return opts
+      .map(function (o) {
+        return '<option value="' + o[0] + '"' + (o[0] === iconsSource ? ' selected' : '') + '>' + escapeHtml(o[1]) + '</option>';
+      })
+      .join('');
+  }
+
+  // Показывает то, что относится к выбранному набору: форму добавления —
+  // только у «Общих», блок выбора пользователя — только у «Чужих», сетку
+  // «Своих»/«Общих» — у всех остальных. Новых запросов не шлёт (кроме
+  // первого GET /admin/users при первом выборе «Чужих»).
+  function applyIconsSource() {
+    var others = iconsSource === 'others';
+    var form = document.getElementById('icon-add-form');
+    if (form) form.hidden = iconsSource !== 'common';
+    document.getElementById('icons-others').hidden = !others;
+    document.getElementById('icons-grid').hidden = others;
+    if (others) loadIconsUsers();
+    else renderIconsGrid();
+  }
+
+  function renderIconsGrid() {
+    var grid = document.getElementById('icons-grid');
+    if (!grid || !iconsData) return;
+    grid.innerHTML = iconGridHtml(iconsData[iconsSource], {
+      editable: iconsSource === 'common' && canManageIcons(),
+    });
+  }
+
+  // «Чужие»: GET /admin/users — при первом выборе за заход на «Отчёты»
+  // (обычному пользователю он вернул бы 403, админу нужен редко).
+  function loadIconsUsers() {
+    if (iconsUsers) {
+      renderIconsUserSelect();
+      return;
+    }
+    var slot = document.getElementById('icons-others-user');
+    slot.innerHTML = '<p class="sub">Загрузка…</p>';
+    apiJson('/admin/users', { credentials: 'include' })
       .then(function (data) {
         if (!data) return; // 401 — apiJson уже вызвал renderLogin()
-        var el = document.getElementById('admin-icons-common');
-        if (el) el.innerHTML = iconGridHtml(data.common, { editable: true });
+        iconsUsers = data.users;
+        if (iconsSource === 'others' && document.getElementById('icons-others-user')) renderIconsUserSelect();
       })
       .catch(function (err) {
-        var el = document.getElementById('admin-icons-common');
+        var el = document.getElementById('icons-others-user');
         if (el) el.innerHTML = '<p class="err">Не удалось загрузить: ' + escapeHtml(err.message) + '</p>';
       });
   }
 
-  function setIconAddPreview(blob) {
-    var el = document.getElementById('icon-add-preview');
-    if (iconAddPreviewUrl) URL.revokeObjectURL(iconAddPreviewUrl);
-    iconAddPreviewUrl = blob ? URL.createObjectURL(blob) : null;
-    if (el) el.style.backgroundImage = iconAddPreviewUrl ? 'url("' + iconAddPreviewUrl + '")' : '';
+  function renderIconsUserSelect() {
+    var slot = document.getElementById('icons-others-user');
+    if (!slot) return;
+    slot.innerHTML =
+      '<label class="cur-field">Пользователь<select id="icons-user-select">' +
+      '<option value="">— выбрать пользователя —</option>' +
+      iconsUsers
+        .map(function (u) {
+          return '<option value="' + escapeHtml(u.id) + '"' + (u.id === iconsOtherUserId ? ' selected' : '') + '>' +
+            escapeHtml(u.email) + '</option>';
+        })
+        .join('') +
+      '</select></label>';
+    document.getElementById('icons-user-select').addEventListener('change', function (ev) {
+      iconsOtherUserId = ev.target.value;
+      var seq = ++iconsOtherSeq;
+      var resultEl = document.getElementById('icons-others-result');
+      if (!iconsOtherUserId) {
+        resultEl.innerHTML = '';
+        return;
+      }
+      resultEl.innerHTML = '<p class="sub">Загрузка…</p>';
+      // Мимо кэша отчётов и без as_user_id: это собственные иконки выбранного
+      // пользователя, а не «глазами клиента».
+      apiJson('/api/reports/admin/icons?user_id=' + encodeURIComponent(iconsOtherUserId), { credentials: 'include' })
+        .then(function (data) {
+          if (seq !== iconsOtherSeq || !data) return; // устарел / 401
+          resultEl.innerHTML = iconGridHtml(data.user);
+        })
+        .catch(function (err) {
+          if (seq !== iconsOtherSeq) return;
+          resultEl.innerHTML = '<p class="err">Не удалось загрузить: ' + escapeHtml(err.message) + '</p>';
+        });
+    });
+  }
+
+  // После записи (добавление/переименование/удаление): сбросить ключ icons в
+  // reportsCache, перезапросить и перерисовать ТОЛЬКО подписи списка «Показать»
+  // и сетку — выбранный набор и заполненная форма не сбрасываются.
+  function reloadIcons() {
+    Object.keys(reportsCache).forEach(function (k) {
+      if (k.indexOf('icons?') === 0) delete reportsCache[k];
+    });
+    return fetchReport('icons', {})
+      .then(function (data) {
+        if (!data) return; // 401
+        iconsData = data;
+        var sel = document.getElementById('icons-source');
+        if (sel) sel.innerHTML = iconsSourceOptionsHtml();
+        if (iconsSource !== 'others') renderIconsGrid();
+      })
+      .catch(function (err) {
+        var grid = document.getElementById('icons-grid');
+        if (grid) grid.innerHTML = '<p class="err">Не удалось загрузить: ' + escapeHtml(err.message) + '</p>';
+      });
+  }
+
+  // ---------- Редактор круглой обрезки ----------
+  // Один <canvas> + Pointer Events, без библиотек (LAN-only, vendor/ не
+  // растим). Повторяет Android CircleCropView: затемнение вне круга,
+  // minScale — картинка закрывает круг, 8× — максимум, clamp — край картинки
+  // не заходит в круг. Все размеры — во внутренних единицах canvas (CROP_VIEW),
+  // CSS может его сжать на телефоне: координаты указателя приводятся к ним.
+  var CROP_VIEW = 600;     // сторона canvas редактора
+  var CROP_R = 280;        // радиус круга
+  var CROP_MAX_SIDE = 2048; // длинная сторона рабочей копии
+  var CROP_MAX_ZOOM = 8;
+  var iconCrop = null;     // {src (canvas), w, h, min, scale, ox, oy}
+  var iconCropRaf = 0;
+  var iconCropPointers = {}; // pointerId → {x, y}
+  var iconCropSeq = 0;
+
+  // Файл → рабочая копия на canvas (длинная сторона ≤ 2048) и стартовое
+  // положение. objectURL, а не FileReader/dataURL: фото в 10+ МБ не раздувается
+  // в base64-строку. reject — файл не декодируется как изображение.
+  function loadIconCrop(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var w = img.naturalWidth, h = img.naturalHeight;
+        if (!(w > 0 && h > 0)) w = h = 512; // SVG без собственного размера
+        var k = Math.min(1, CROP_MAX_SIDE / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+        var src = document.createElement('canvas');
+        src.width = cw;
+        src.height = ch;
+        var ctx = src.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        try {
+          ctx.drawImage(img, 0, 0, cw, ch);
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        var min = Math.max(2 * CROP_R / cw, 2 * CROP_R / ch);
+        resolve({
+          src: src, w: cw, h: ch, min: min, scale: min,
+          ox: (CROP_VIEW - cw * min) / 2, oy: (CROP_VIEW - ch * min) / 2,
+        });
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        reject(new Error('not an image'));
+      };
+      img.src = url;
+    });
+  }
+
+  // Круг целиком внутри картинки: ox ∈ [V/2+R−w·s, V/2−R], то же для oy.
+  function clampIconCrop(c) {
+    var lo = CROP_VIEW / 2 + CROP_R, hi = CROP_VIEW / 2 - CROP_R;
+    c.ox = Math.min(hi, Math.max(lo - c.w * c.scale, c.ox));
+    c.oy = Math.min(hi, Math.max(lo - c.h * c.scale, c.oy));
+  }
+
+  // Масштаб в factor раз вокруг точки (px, py) — точка под пальцем/курсором
+  // остаётся на месте.
+  function zoomIconCrop(c, factor, px, py) {
+    var ns = Math.min(c.min * CROP_MAX_ZOOM, Math.max(c.min, c.scale * factor));
+    var f = ns / c.scale;
+    c.ox = px - (px - c.ox) * f;
+    c.oy = py - (py - c.oy) * f;
+    c.scale = ns;
+    clampIconCrop(c);
+  }
+
+  // Круг редактора → size×size: источник берётся в координатах рабочей копии,
+  // а не с экранного canvas (качество не зависит от размера на экране); за
+  // кругом alpha 0.
+  function drawIconCropOutput(ctx, size, c) {
+    var d = 2 * CROP_R / c.scale;
+    var sx = (CROP_VIEW / 2 - CROP_R - c.ox) / c.scale;
+    var sy = (CROP_VIEW / 2 - CROP_R - c.oy) / c.scale;
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(c.src, sx, sy, d, d, 0, 0, size, size);
+    ctx.restore();
+  }
+
+  function drawIconCropEditor() {
+    var cv = document.getElementById('icon-crop-canvas');
+    var c = iconCrop;
+    if (!cv || !c) return;
+    var ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, CROP_VIEW, CROP_VIEW);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(c.src, c.ox, c.oy, c.w * c.scale, c.h * c.scale);
+    ctx.fillStyle = 'rgba(32,30,29,0.7)';
+    ctx.beginPath();
+    ctx.rect(0, 0, CROP_VIEW, CROP_VIEW);
+    ctx.moveTo(CROP_VIEW / 2 + CROP_R, CROP_VIEW / 2);
+    ctx.arc(CROP_VIEW / 2, CROP_VIEW / 2, CROP_R, 0, Math.PI * 2);
+    ctx.fill('evenodd');
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(CROP_VIEW / 2, CROP_VIEW / 2, CROP_R, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Превью и ползунок обновляются не чаще кадра: wheel/pointermove приходят
+  // пачками.
+  function scheduleIconCropDraw() {
+    if (iconCropRaf) return;
+    iconCropRaf = requestAnimationFrame(function () {
+      iconCropRaf = 0;
+      var c = iconCrop;
+      if (!c) return;
+      drawIconCropEditor();
+      var pv = document.getElementById('icon-crop-preview');
+      if (pv) drawIconCropOutput(pv.getContext('2d'), pv.width, c);
+      var zoom = document.getElementById('icon-crop-zoom');
+      if (zoom) {
+        var t = Math.round(Math.log(c.scale / c.min) / Math.log(CROP_MAX_ZOOM) * 1000);
+        if (Math.abs(Number(zoom.value) - t) > 1) zoom.value = String(t);
+      }
+    });
+  }
+
+  // Итог для отправки: 256×256, WEBP 0.9; браузер без WEBP-кодировщика
+  // (Safari) отдаёт из toBlob PNG — уходит он.
+  function iconCropToBlob(c) {
+    return new Promise(function (resolve, reject) {
+      var canvas = document.createElement('canvas');
+      canvas.width = ICON_SIZE;
+      canvas.height = ICON_SIZE;
+      try {
+        drawIconCropOutput(canvas.getContext('2d'), ICON_SIZE, c);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      canvas.toBlob(function (blob) {
+        if (blob) resolve(blob);
+        else reject(new Error('canvas.toBlob'));
+      }, 'image/webp', 0.9);
+    });
+  }
+
+  function wireIconCropInput() {
+    var cv = document.getElementById('icon-crop-canvas');
+    var zoom = document.getElementById('icon-crop-zoom');
+
+    function point(ev) {
+      var r = cv.getBoundingClientRect();
+      var k = CROP_VIEW / r.width;
+      return { x: (ev.clientX - r.left) * k, y: (ev.clientY - r.top) * k };
+    }
+
+    cv.addEventListener('pointerdown', function (ev) {
+      if (!iconCrop) return;
+      try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* не критично */ }
+      iconCropPointers[ev.pointerId] = point(ev);
+      ev.preventDefault();
+    });
+    cv.addEventListener('pointermove', function (ev) {
+      var c = iconCrop;
+      var prev = iconCropPointers[ev.pointerId];
+      if (!c || !prev) return;
+      var p = point(ev);
+      var ids = Object.keys(iconCropPointers);
+      if (ids.length >= 2) {
+        // Щипок: две первые точки; масштаб вокруг прежней середины, затем
+        // сдвиг на смещение середины.
+        var other = iconCropPointers[ids[0] === String(ev.pointerId) ? ids[1] : ids[0]];
+        var pm = { x: (prev.x + other.x) / 2, y: (prev.y + other.y) / 2 };
+        var nm = { x: (p.x + other.x) / 2, y: (p.y + other.y) / 2 };
+        var d0 = Math.hypot(prev.x - other.x, prev.y - other.y);
+        var d1 = Math.hypot(p.x - other.x, p.y - other.y);
+        if (d0 > 0) zoomIconCrop(c, d1 / d0, pm.x, pm.y);
+        c.ox += nm.x - pm.x;
+        c.oy += nm.y - pm.y;
+      } else {
+        c.ox += p.x - prev.x;
+        c.oy += p.y - prev.y;
+      }
+      clampIconCrop(c);
+      iconCropPointers[ev.pointerId] = p;
+      scheduleIconCropDraw();
+    });
+    function release(ev) { delete iconCropPointers[ev.pointerId]; }
+    cv.addEventListener('pointerup', release);
+    cv.addEventListener('pointercancel', release);
+    // passive: false — иначе preventDefault не удержит прокрутку страницы.
+    cv.addEventListener('wheel', function (ev) {
+      var c = iconCrop;
+      if (!c) return;
+      ev.preventDefault();
+      var dy = ev.deltaY * (ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? 100 : 1);
+      var p = point(ev);
+      zoomIconCrop(c, Math.exp(-dy * 0.0015), p.x, p.y);
+      scheduleIconCropDraw();
+    }, { passive: false });
+    // Ползунок «Масштаб» — вокруг центра круга (центр видимой области
+    // сохраняется), от «закрывает круг» (0) до 8× (1000).
+    zoom.addEventListener('input', function () {
+      var c = iconCrop;
+      if (!c) return;
+      var target = c.min * Math.pow(CROP_MAX_ZOOM, Number(zoom.value) / 1000);
+      zoomIconCrop(c, target / c.scale, CROP_VIEW / 2, CROP_VIEW / 2);
+      scheduleIconCropDraw();
+    });
+  }
+
+  // ---------- Форма «Добавить иконку» ----------
+  // Набор ведёт администратор здесь; телефоны его только скачивают
+  // (GET /sync/pull, поток справочников). Ручки — wallet-api,
+  // /api/admin/icons* (раздел иконок админа в его openapi.yaml), байты
+  // картинки — заранее через POST /sync/blobs. Просмотр — wallet-report.
+  function iconAddFormHtml() {
+    return (
+      '<form class="icon-add-form" id="icon-add-form" novalidate hidden>' +
+      '<h3>Добавить иконку</h3>' +
+      '<label class="cur-field icon-add-file">Картинка<input type="file" id="icon-add-file" accept="image/*"></label>' +
+      '<div class="icon-crop" id="icon-crop" hidden>' +
+      '<canvas class="icon-crop-canvas" id="icon-crop-canvas" width="' + CROP_VIEW + '" height="' + CROP_VIEW + '"></canvas>' +
+      '<div class="icon-crop-side">' +
+      '<canvas class="icon-crop-preview" id="icon-crop-preview" width="128" height="128"></canvas>' +
+      '<label class="icon-crop-zoom">Масштаб<input type="range" id="icon-crop-zoom" min="0" max="1000" value="0"></label>' +
+      '<p class="sub icon-crop-hint">Тяните картинку; колесо мыши, щипок или ползунок меняют масштаб.</p>' +
+      '</div>' +
+      '</div>' +
+      '<div class="icon-add-row">' +
+      '<label class="cur-field">Название<input type="text" id="icon-add-name" maxlength="64" autocomplete="off"></label>' +
+      '<label class="cur-field">Тип<select id="icon-add-type">' +
+      '<option value="0">Категория</option><option value="1">Флаг</option>' +
+      '</select></label>' +
+      '<label class="cur-field">Куда добавить<select id="icon-add-target">' +
+      '<option value="common">Общие</option>' +
+      '</select></label>' +
+      '<button type="submit" class="btn" id="icon-add-btn">Добавить</button>' +
+      '</div>' +
+      '<p class="err icon-add-err" id="icon-add-err"></p>' +
+      '</form>'
+    );
   }
 
   function wireIconAddForm() {
     var form = document.getElementById('icon-add-form');
     var fileInput = document.getElementById('icon-add-file');
+    var cropEl = document.getElementById('icon-crop');
     var nameInput = document.getElementById('icon-add-name');
     var typeSelect = document.getElementById('icon-add-type');
     var btn = document.getElementById('icon-add-btn');
     var errEl = document.getElementById('icon-add-err');
-    iconAddPrepared = null;
-    setIconAddPreview(null);
+    iconCrop = null;
+    iconCropPointers = {};
+    wireIconCropInput();
 
     fileInput.addEventListener('change', function () {
       var file = fileInput.files && fileInput.files[0];
+      var seq = ++iconCropSeq;
       errEl.textContent = '';
-      setIconAddPreview(null);
-      if (!file) {
-        iconAddPrepared = null;
-        return;
-      }
-      var prepared = prepareIconImage(file);
-      iconAddPrepared = prepared;
-      prepared.then(
-        function (blob) { if (iconAddPrepared === prepared) setIconAddPreview(blob); },
-        function () { if (iconAddPrepared === prepared) errEl.textContent = 'Не удалось прочитать картинку.'; }
+      iconCrop = null;
+      cropEl.hidden = true;
+      if (!file) return;
+      loadIconCrop(file).then(
+        function (c) {
+          if (seq !== iconCropSeq) return; // выбрали другой файл
+          iconCrop = c;
+          cropEl.hidden = false;
+          document.getElementById('icon-crop-zoom').value = '0';
+          scheduleIconCropDraw();
+        },
+        function () {
+          if (seq === iconCropSeq) errEl.textContent = 'Не удалось прочитать картинку.';
+        }
       );
     });
 
@@ -701,9 +969,11 @@
       ev.preventDefault();
       if (btn.disabled) return;
       var name = nameInput.value.trim();
-      var prepared = iconAddPrepared;
-      if (!prepared || !name) {
-        errEl.textContent = 'Выберите картинку и введите название.';
+      var crop = iconCrop;
+      if (!crop || !name) {
+        errEl.textContent = fileInput.files && fileInput.files[0] && !crop && name
+          ? 'Не удалось прочитать картинку.'
+          : 'Выберите картинку и введите название.';
         return;
       }
       errEl.textContent = '';
@@ -714,9 +984,9 @@
         btn.textContent = 'Добавить';
       }
 
-      prepared
+      iconCropToBlob(crop)
         .catch(function () {
-          var e = new Error('Не удалось прочитать картинку.');
+          var e = new Error('Не удалось подготовить картинку.');
           e.local = true;
           throw e;
         })
@@ -735,11 +1005,14 @@
           done();
           if (!created) return; // 401 — экран входа уже показан
           form.reset();
-          iconAddPrepared = null;
-          setIconAddPreview(null);
-          return refreshAdminCommonIcons();
+          iconCrop = null;
+          iconCropSeq++;
+          cropEl.hidden = true;
+          iconsSource = 'common'; // после добавления показать «Общие»
+          return reloadIcons().then(applyIconsSource);
         })
         .catch(function (err) {
+          // Форма и положение обрезки не трогаются — можно поправить и повторить.
           done();
           if (err.local) errEl.textContent = err.message;
           else if (err.status === 409) errEl.textContent = ICON_DUP_NAME;
@@ -748,6 +1021,7 @@
     });
   }
 
+  // ---------- Переименование и удаление общих иконок ----------
   function adminIconCellError(cell, text) {
     var el = cell.querySelector('.icon-admin-err');
     if (el) el.textContent = text;
@@ -794,7 +1068,7 @@
     adminIconsApi('PATCH', '/api/admin/icons/' + encodeURIComponent(cell.getAttribute('data-uuid')), { name: name })
       .then(function (data) {
         if (!data) return; // 401
-        return refreshAdminCommonIcons();
+        return reloadIcons();
       })
       .catch(function (err) {
         setBusy(false);
@@ -811,7 +1085,7 @@
     adminIconsApi('DELETE', '/api/admin/icons/' + encodeURIComponent(cell.getAttribute('data-uuid')))
       .then(function (data) {
         if (!data) return; // 401
-        return refreshAdminCommonIcons();
+        return reloadIcons();
       })
       .catch(function (err) {
         btn.disabled = false;
@@ -824,10 +1098,10 @@
       });
   }
 
-  // Один раз на контейнер #admin-icons-common: его содержимое
-  // (refreshAdminCommonIcons) меняется, сам элемент — нет.
-  function wireAdminCommonIconsEvents() {
-    var root = document.getElementById('admin-icons-common');
+  // Один раз на контейнер #icons-grid: его содержимое (reloadIcons/
+  // renderIconsGrid) меняется, сам элемент — нет.
+  function wireIconsGridEvents() {
+    var root = document.getElementById('icons-grid');
     root.addEventListener('click', function (ev) {
       var btn = ev.target.closest ? ev.target.closest('.icon-admin-act') : null;
       if (!btn || btn.disabled) return;
@@ -851,70 +1125,36 @@
     });
   }
 
-  function renderAdminIconsScreen(commonIcons, users) {
-    setWide(true);
-    var userOptions = users
-      .map(function (u) { return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.email) + '</option>'; })
-      .join('');
-
-    app.innerHTML =
-      '<h1>Иконки</h1>' +
-      '<p class="sub">Общий набор виден всем кошелькам и приезжает на телефоны при синхронизации. ' +
-      'Выберите пользователя, чтобы посмотреть его собственные иконки (добавленные им самим ' +
-      'из галереи, на сервер они не отправляются).</p>' +
-      '<h2>Общие</h2>' +
-      iconAddFormHtml() +
-      '<div id="admin-icons-common">' + iconGridHtml(commonIcons, { editable: true }) + '</div>' +
-      '<h2>Иконки пользователя</h2>' +
-      '<div class="reports-controls">' +
-      '<select id="admin-icons-user-select">' +
-      '<option value="">— выбрать пользователя —</option>' +
-      userOptions +
-      '</select>' +
-      '</div>' +
-      '<div id="admin-icons-user-result"></div>' +
-      '<button type="button" class="btn btn-secondary" id="admin-icons-back-btn">Назад</button>';
-
-    document.getElementById('admin-icons-back-btn').addEventListener('click', renderAdmin);
-    wireIconAddForm();
-    wireAdminCommonIconsEvents();
-
-    document.getElementById('admin-icons-user-select').addEventListener('change', function (ev) {
-      var userId = ev.target.value;
-      var resultEl = document.getElementById('admin-icons-user-result');
-      if (!userId) {
-        resultEl.innerHTML = '';
-        return;
-      }
-
-      resultEl.innerHTML = '<p class="sub">Загрузка…</p>';
-      apiJson('/api/reports/admin/icons?user_id=' + encodeURIComponent(userId), { credentials: 'include' })
-        .then(function (data) {
-          if (!data) return; // 401 — apiJson уже вызвал renderLogin()
-          resultEl.innerHTML = iconGridHtml(data.user);
-        })
-        .catch(function (err) {
-          resultEl.innerHTML = '<p class="err">Не удалось загрузить: ' + escapeHtml(err.message) + '</p>';
-        });
-    });
-  }
-
-  // "Иконки" в "Отчётах" (view 'icons', по прямому запросу, 2026-09-22) —
-  // то же, что админская renderAdminIconsScreen выше, но про СВОЙ леджер:
-  // GET /api/reports/icons (через fetchReport — значит, с as_user_id в
-  // режиме "Посмотреть как клиент" и тем же кэшем "до кнопки Обновить").
-  // Не зависит от периода/валюты — грузится один раз при открытии
-  // "Отчётов", как "Курсы валют" и "Доступ" (см. конец renderReports()).
+  // Вкладка «Иконки» в «Отчётах» (view 'icons'): GET /api/reports/icons через
+  // fetchReport — с as_user_id в режиме "Посмотреть как клиент" и тем же
+  // кэшем "до кнопки Обновить". Не зависит от периода/валюты — грузится один
+  // раз при открытии "Отчётов", как "Курсы валют" и "Доступ".
   function refreshIcons() {
     var root = document.getElementById('icons-root');
     fetchReport('icons', {})
       .then(function (data) {
         if (!data) return; // 401 — fetchReport уже вызвал renderLogin()
+        iconsData = data;
+        iconsUsers = null; // новый заход — список пользователей заново и лениво
+        iconsOtherUserId = '';
+        iconsOtherSeq++;
+        if (iconsSource === 'others' && !canManageIcons()) iconsSource = 'user';
         root.innerHTML =
-          '<h2>Мои (' + data.user.length + ')</h2>' +
-          iconGridHtml(data.user) +
-          '<h2>Общие (' + data.common.length + ')</h2>' +
-          iconGridHtml(data.common);
+          '<div class="icons-controls"><label class="cur-field">Показать' +
+          '<select id="icons-source">' + iconsSourceOptionsHtml() + '</select></label></div>' +
+          '<div id="icons-others" hidden>' +
+          '<div class="icons-controls" id="icons-others-user"></div>' +
+          '<div id="icons-others-result"></div>' +
+          '</div>' +
+          (canManageIcons() ? iconAddFormHtml() : '') +
+          '<div id="icons-grid"></div>';
+        document.getElementById('icons-source').addEventListener('change', function (ev) {
+          iconsSource = ev.target.value;
+          applyIconsSource();
+        });
+        wireIconsGridEvents();
+        if (canManageIcons()) wireIconAddForm();
+        applyIconsSource();
       })
       .catch(function (err) {
         root.innerHTML = '<p class="err">Не удалось загрузить иконки: ' + escapeHtml(err.message) + '</p>';
