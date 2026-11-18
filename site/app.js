@@ -6242,6 +6242,21 @@
   var curFlagIcons = null;        // null — грузятся; [] — иконки-флаги (icon_type 1) из GET /api/reports/icons
   var curFlagIconsError = '';
 
+  // Вкладка «Маршруты пересчёта» (change currency-conversion-routes, REST
+  // wallet-api /api/currency-routes*). Маршрут — путь из 3–4 валют
+  // «BTC → EUR → RUB»: клиент присылает только uuid валют, пары и направление
+  // шагов подбирает сервер. curRoutes — null (ещё не загружено) или массив
+  // элементов GET /api/currency-routes; ошибка загрузки изолирована на вкладке
+  // (curRoutesError), форма — состояние curRoute* (путь curRoutePath: 3–4 uuid,
+  // '' — валюта не выбрана; curRoutePickerOpen — индекс открытого пикера).
+  var curRoutes = null;
+  var curRoutesError = '';        // «Не удалось загрузить маршруты: …» — только на вкладке маршрутов
+  var curRouteListError = '';     // ошибка удаления маршрута — строкой над таблицей
+  var curRouteFormOpen = false;
+  var curRoutePath = ['', '', ''];
+  var curRoutePickerOpen = null;
+  var curRouteFormError = '';
+
   // Каталог популярных валют для автозаполнения формы новой валюты (D3).
   // flag — слова для поиска иконки-флага по её имени (curFindPresetFlag):
   // ISO-код и страна по-английски, как в именах флагов seed.json телефона
@@ -6799,18 +6814,129 @@
     loadCurFlagIcons();
   }
 
+  // --- вкладка «Маршруты пересчёта» ----------------------------------------
+
+  function curCurrencyByUuid(uuid) {
+    return currencyDirectory.filter(function (c) { return c.uuid === uuid; })[0];
+  }
+
+  // «BTC → EUR → RUB» по path элемента GET /api/currency-routes.
+  function curRouteLabel(route) {
+    return route.path.map(function (c) { return c.iso_code; }).join(' → ');
+  }
+
+  function curRouteRowHtml(r) {
+    var flags = r.path.map(function (c) {
+      var dir = curCurrencyByUuid(c.uuid);
+      return categoryIconHtml(dir ? dir.icon_sha256 : '', 'wallet-currency-flag');
+    }).join('');
+    var steps = r.steps.map(function (s) {
+      return escapeHtml(s.symbol) + (s.is_reverse ? ' <span class="sub-id">(обр.)</span>' : '');
+    }).join(' · ');
+    return (
+      '<tr>' +
+      '<td>' + flags + ' <strong>' + escapeHtml(curRouteLabel(r)) + '</strong></td>' +
+      '<td>' + steps + '</td>' +
+      '<td><button type="button" class="btn-force-logout" data-cur-delete-route data-from="' + escapeHtml(r.from.uuid) +
+      '" data-to="' + escapeHtml(r.to.uuid) + '" data-label="' + escapeHtml(curRouteLabel(r)) + '">Удалить</button></td>' +
+      '</tr>'
+    );
+  }
+
+  // Индексированный флаговый пикер пути: та же разметка, что у «Добавить пару»
+  // (curPairCurrencyPickerHtml), но состояние — элемент curRoutePath[index].
+  function curRoutePickerHtml(index) {
+    var selectedUuid = curRoutePath[index];
+    var last = curRoutePath.length - 1;
+    var title = index === 0 ? 'Из' : (index === last ? 'В' : 'Через');
+    var selected = curCurrencyByUuid(selectedUuid);
+    var buttonHtml = selected
+      ? categoryIconHtml(selected.icon_sha256, 'currency-picker-row-flag') +
+        '<span>' + escapeHtml(selected.iso_code) + '</span>'
+      : '<span class="currency-picker-row-flag"></span><span class="sub-id">Выбрать…</span>';
+    var rowsHtml = currencyDirectory.map(function (c) {
+      return '<div class="currency-picker-row' + (c.uuid === selectedUuid ? ' active' : '') + '" ' +
+        'data-route-pick="' + index + '" data-uuid="' + escapeHtml(c.uuid) + '">' +
+        categoryIconHtml(c.icon_sha256, 'currency-picker-row-flag') +
+        '<span class="currency-picker-row-code">' + escapeHtml(c.iso_code) + '</span>' +
+        '<span class="currency-picker-row-name">' + escapeHtml(c.name) + '</span>' +
+        '</div>';
+    }).join('');
+    return (
+      '<div class="cur-route-step"><span class="sub-id">' + title + '</span>' +
+      '<label class="currency-picker">' +
+      '<button type="button" class="currency-picker-btn" data-route-toggle="' + index + '">' + buttonHtml + '</button>' +
+      '<div class="currency-picker-list"' + (curRoutePickerOpen === index ? '' : ' hidden') + '>' + rowsHtml + '</div>' +
+      '</label></div>'
+    );
+  }
+
+  function curRouteFormHtml() {
+    if (!curRouteFormOpen) return '';
+    var pickers = curRoutePath.map(function (_, i) { return curRoutePickerHtml(i); }).join('');
+    var midBtn = curRoutePath.length < 4
+      ? '<button type="button" class="btn btn-secondary" id="cur-route-add-mid-btn">Ещё промежуточная</button>'
+      : '<button type="button" class="btn btn-secondary" id="cur-route-remove-mid-btn">Убрать</button>';
+    return (
+      '<div class="cur-add-form cur-route-form">' + pickers + midBtn +
+      '<button type="button" class="btn" id="cur-create-route-btn">Создать</button>' +
+      '</div>' +
+      (curRouteFormError ? '<p class="err" id="cur-route-form-error">' + escapeHtml(curRouteFormError) + '</p>' : '')
+    );
+  }
+
+  function curRoutesHtml() {
+    if (curRoutesError) return reportsErrorHtml(curRoutesError);
+    if (!curRoutes) return '<p class="sub">Загрузка…</p>';
+    var rows = curRoutes.length
+      ? curRoutes.map(curRouteRowHtml).join('')
+      : '<tr><td colspan="3" class="wallet-empty">Маршрутов пока нет. Если прямой пары нет, ' +
+        'курс считается через USD — при наличии пар к USD.</td></tr>';
+    return (
+      (curRouteListError ? '<p class="err" id="cur-route-list-error">' + escapeHtml(curRouteListError) + '</p>' : '') +
+      curRouteFormHtml() +
+      '<div class="users-table-wrap">' +
+      '<table class="users" id="cur-routes-table">' +
+      '<thead><tr><th>Маршрут</th><th>Шаги</th><th>Действия</th></tr></thead>' +
+      '<tbody id="cur-route-rows">' + rows + '</tbody>' +
+      '</table></div>'
+    );
+  }
+
+  // Маршруты грузятся после пар: падение /api/currency-routes не ломает экран —
+  // ошибка остаётся на своей вкладке (curRoutesError).
+  function loadCurRoutes() {
+    apiJson('/api/currency-routes', { credentials: 'include' })
+      .then(function (data) {
+        if (!data) return;
+        curRoutes = data.routes;
+        curRoutesError = '';
+      })
+      .catch(function (err) {
+        curRoutesError = 'Не удалось загрузить маршруты: ' + err.message;
+      })
+      .then(function () {
+        if (curTab === 'routes' && !curDetailPairUuid) renderCurList();
+      });
+  }
+
   function renderCurList() {
     var root = document.getElementById('cur-root');
     if (!root) return;
     var onPairs = curTab === 'pairs';
+    var onRoutes = curTab === 'routes';
+    function tabBtn(name, title) {
+      return '<button type="button" class="ops-seg-btn' + (curTab === name ? ' active' : '') + '" data-cur-tab="' + name + '">' + title + '</button>';
+    }
     var tabsHtml =
       '<div class="ops-seg-group cur-tabs">' +
-      '<button type="button" class="ops-seg-btn' + (onPairs ? ' active' : '') + '" data-cur-tab="pairs">Валютные пары</button>' +
-      '<button type="button" class="ops-seg-btn' + (onPairs ? '' : ' active') + '" data-cur-tab="currencies">Справочник валют</button>' +
+      tabBtn('pairs', 'Валютные пары') + tabBtn('routes', 'Маршруты пересчёта') + tabBtn('currencies', 'Справочник валют') +
       '</div>';
     var actionHtml = onPairs
       ? '<button type="button" class="btn" id="cur-toggle-add-btn">' + (curAddFormOpen ? 'Скрыть форму' : 'Добавить пару') + '</button>'
-      : '<button type="button" class="btn" id="cur-add-currency-btn"' + (curCanWriteCurrencies() ? '' : ' hidden') + '>Добавить валюту</button>';
+      : onRoutes
+        ? '<button type="button" class="btn" id="cur-toggle-route-btn">' + (curRouteFormOpen ? 'Скрыть форму' : 'Добавить маршрут') + '</button>'
+        : '<button type="button" class="btn" id="cur-add-currency-btn"' + (curCanWriteCurrencies() ? '' : ' hidden') + '>Добавить валюту</button>';
     var bodyHtml = onPairs
       ? '<div class="wallet-search-row"><input type="text" id="cur-search" ' +
         'placeholder="Пара или валюта (например EUR)" value="' + escapeHtml(curQuery) + '"></div>' +
@@ -6820,7 +6946,9 @@
         '<thead><tr><th>Пара</th><th>Последний курс</th><th>Изменение</th><th>Действия</th></tr></thead>' +
         '<tbody id="cur-rows"></tbody>' +
         '</table></div>'
-      : '<div id="cur-currencies">' + curCurrenciesHtml() + '</div>';
+      : onRoutes
+        ? '<div id="cur-routes">' + curRoutesHtml() + '</div>'
+        : '<div id="cur-currencies">' + curCurrenciesHtml() + '</div>';
     root.innerHTML =
       '<section class="report-section">' +
       '<div class="cur-tabs-row">' + tabsHtml + actionHtml + '</div>' +
@@ -7068,6 +7196,7 @@
         if (!data) return; // 401 — renderLogin() уже вызван
         curPairs = data.pairs;
         renderCurRoot();
+        loadCurRoutes(); // после пар; ошибка маршрутов остаётся на своей вкладке
       })
       .catch(function (err) {
         if (root) root.innerHTML = reportsErrorHtml('Не удалось загрузить валютные пары: ' + err.message);
@@ -7143,9 +7272,102 @@
         if (tab !== curTab) {
           curTab = tab;
           curPairPickerOpen = null;
+          curRoutePickerOpen = null;
           curCurrenciesError = '';
           renderCurList();
         }
+        return;
+      }
+      // Вкладка «Маршруты пересчёта» (currency-conversion-routes).
+      if (ev.target.closest('#cur-toggle-route-btn')) {
+        curRouteFormOpen = !curRouteFormOpen;
+        curRoutePath = ['', '', ''];
+        curRoutePickerOpen = null;
+        curRouteFormError = '';
+        renderCurList();
+        return;
+      }
+      if ((el = ev.target.closest('[data-route-toggle]'))) {
+        var routeToggle = parseInt(el.getAttribute('data-route-toggle'), 10);
+        curRoutePickerOpen = curRoutePickerOpen === routeToggle ? null : routeToggle;
+        renderCurList();
+        return;
+      }
+      if ((el = ev.target.closest('[data-route-pick]'))) {
+        curRoutePath[parseInt(el.getAttribute('data-route-pick'), 10)] = el.getAttribute('data-uuid');
+        curRoutePickerOpen = null;
+        curRouteFormError = '';
+        renderCurList();
+        return;
+      }
+      if (ev.target.closest('#cur-route-add-mid-btn')) {
+        if (curRoutePath.length < 4) curRoutePath.splice(curRoutePath.length - 1, 0, '');
+        curRoutePickerOpen = null;
+        renderCurList();
+        return;
+      }
+      if (ev.target.closest('#cur-route-remove-mid-btn')) {
+        if (curRoutePath.length > 3) curRoutePath.splice(curRoutePath.length - 2, 1);
+        curRoutePickerOpen = null;
+        renderCurList();
+        return;
+      }
+      if ((el = ev.target.closest('#cur-create-route-btn'))) {
+        var path = curRoutePath.slice();
+        var routeError = '';
+        if (path.some(function (u) { return !u; })) {
+          routeError = 'Выберите все валюты маршрута';
+        } else if (path.some(function (u, i) { return path.indexOf(u) !== i; })) {
+          routeError = 'Валюты в маршруте не должны повторяться';
+        } else {
+          var routeFrom = path[0], routeTo = path[path.length - 1];
+          var exists = (curRoutes || []).some(function (r) {
+            return (r.from.uuid === routeFrom && r.to.uuid === routeTo) ||
+                   (r.from.uuid === routeTo && r.to.uuid === routeFrom);
+          });
+          if (exists) routeError = 'Такой маршрут уже есть';
+        }
+        if (routeError) {
+          curRouteFormError = routeError;
+          renderCurList();
+          return;
+        }
+        el.disabled = true;
+        apiJson('/api/currency-routes', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currency_uuids: path }),
+        })
+          .then(function (created) {
+            if (!created) return;
+            curRouteFormOpen = false;
+            curRoutePath = ['', '', ''];
+            curRouteFormError = '';
+            curRouteListError = '';
+            loadCurRoutes();
+          })
+          .catch(function (err) {
+            curRouteFormError = 'Не удалось создать маршрут: ' + err.message;
+            renderCurList();
+          });
+        return;
+      }
+      if ((el = ev.target.closest('[data-cur-delete-route]'))) {
+        var routeLabel = el.getAttribute('data-label');
+        if (!window.confirm('Удалить маршрут ' + routeLabel + '? Курсы и пары не изменятся.')) return;
+        el.disabled = true;
+        apiJson('/api/currency-routes/' + encodeURIComponent(el.getAttribute('data-from')) + '/' +
+                encodeURIComponent(el.getAttribute('data-to')), { method: 'DELETE', credentials: 'include' })
+          .then(function (res) {
+            if (!res) return;
+            curRouteListError = '';
+            loadCurRoutes();
+          })
+          .catch(function (err) {
+            curRouteListError = 'Не удалось удалить маршрут: ' + err.message;
+            renderCurList();
+          });
         return;
       }
       if (ev.target.closest('#cur-add-currency-btn')) {

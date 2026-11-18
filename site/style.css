@@ -920,6 +920,9 @@ tr.device-current { background: var(--sand2); }
 .cur-add-form select, .cur-add-form input { height: 40px; border-radius: 999px; border: 1.5px solid var(--l14); background: var(--bg); padding: 0 14px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none; }
 .cur-add-form input[type="number"] { width: 90px; }
 .cur-add-form input[type="text"] { width: 140px; }
+/* Форма маршрута пересчёта: подписанные пикеры пути «Из / Через / В». */
+.cur-route-step { display: flex; flex-direction: column; gap: 2px; }
+.cur-route-form { align-items: flex-end; }
 /* .btn/.btn-secondary несут margin-top:20px (расчёт на отдельно стоящую
    кнопку под текстом) и margin-left:8px — в этих flex-строках это ломает
    вертикальное выравнивание с 40px-полями (align-items:center центрирует
