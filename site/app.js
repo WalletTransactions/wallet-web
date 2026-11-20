@@ -132,6 +132,243 @@
     );
   }
 
+  // ---- Вход по email и паролю (change add-password-login) ----
+  // Набор способов определяет сервер: GET /auth/methods запрашивается при каждом
+  // показе экрана входа (и приглашения, и настроек) — переключение AUTH_METHODS
+  // на сервере видно без выката статики. Тексты ошибок — по кодам google-auth.
+
+  var AUTH_INSECURE_WARNING = 'Соединение не защищено: пароль будет передан открытым текстом.';
+  var AUTH_MIN_PASSWORD = 10;
+
+  function fetchAuthMethods() {
+    return fetch('/auth/methods', { credentials: 'include' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        return { methods: data.methods || [], registration: !!data.registration };
+      });
+  }
+
+  function authHasMethod(info, name) {
+    return info.methods.indexOf(name) !== -1;
+  }
+
+  // POST с JSON-телом без тихого продления (apiFetch): 401 здесь — «неверный
+  // пароль», а не «истёк access-токен», и повтор запроса через refresh посчитал
+  // бы неудачную попытку дважды в лимите google-auth.
+  function authPostJson(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (data) {
+        return { res: res, data: data };
+      });
+    });
+  }
+
+  // Текст ошибки ответа ручек пароля (login/register/password) по коду.
+  function authErrorText(r) {
+    var res = r.res;
+    var err = r.data && r.data.error ? r.data.error : '';
+    if (res.status === 429) {
+      var sec = parseInt(res.headers.get('Retry-After'), 10);
+      var min = sec > 0 ? Math.ceil(sec / 60) : 1;
+      return 'Слишком много попыток. Повторите через ' + min + ' мин.';
+    }
+    if (res.status === 403 && err === 'insecure_transport') {
+      return 'Вход по паролю доступен только по защищённому соединению (https).';
+    }
+    if (res.status === 403 && err === 'registration_closed') return 'Регистрация закрыта администратором.';
+    if (res.status === 403 && err === 'auth_method_disabled') return 'Вход по паролю отключён на сервере.';
+    if (res.status === 400 || res.status === 401) return err || 'Неверный email или пароль';
+    return 'Не удалось связаться с сервером: ' + (err || 'HTTP ' + res.status);
+  }
+
+  function setAuthMessage(id, text) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text || '';
+    el.hidden = !text;
+  }
+
+  function authInsecureWarningHtml() {
+    return location.protocol === 'https:' ? '' : '<p class="err auth-warn">' + escapeHtml(AUTH_INSECURE_WARNING) + '</p>';
+  }
+
+  // Вход по паролю: после 200 заново проходим проверку входа (boot) без
+  // перезагрузки страницы. Токен приглашения при этом остаётся в localStorage и
+  // принимается обычным путём (boot -> acceptPendingInviteIfAny). Промис с
+  // {ok:true} либо {ok:false, text}.
+  function authLogin(email, password) {
+    return authPostJson('/auth/login', { email: email, password: password })
+      .then(function (r) {
+        if (r.res.ok) return { ok: true };
+        return { ok: false, text: authErrorText(r) };
+      })
+      .catch(function (err) {
+        return { ok: false, text: 'Не удалось связаться с сервером: ' + err.message };
+      });
+  }
+
+  function loginFormHtml(info) {
+    var password = authHasMethod(info, 'password');
+    var google = authHasMethod(info, 'google');
+    var html = '';
+    if (password) {
+      html +=
+        authInsecureWarningHtml() +
+        '<form class="auth-form" id="login-form" novalidate>' +
+        '<label>Email<input type="email" id="login-email" autocomplete="username" required></label>' +
+        '<label>Пароль<input type="password" id="login-password" autocomplete="current-password" required></label>' +
+        '<p class="err" id="login-error" hidden></p>' +
+        '<button type="submit" class="btn" id="login-submit">Войти</button>' +
+        '</form>';
+      if (info.registration) {
+        html += '<p class="sub auth-switch"><a href="#" id="auth-to-register">Создать аккаунт</a></p>';
+      }
+    }
+    if (password && google) html += '<p class="auth-divider">или</p>';
+    if (google) html += googleLoginLinkHtml();
+    return html;
+  }
+
+  function registerFormHtml() {
+    return (
+      authInsecureWarningHtml() +
+      '<form class="auth-form" id="register-form" novalidate>' +
+      '<label>Email<input type="email" id="register-email" autocomplete="username" required></label>' +
+      '<label>Пароль<input type="password" id="register-password" autocomplete="new-password" required></label>' +
+      '<label>Повторите пароль<input type="password" id="register-password2" autocomplete="new-password" required></label>' +
+      '<label>Имя (необязательно)<input type="text" id="register-name" autocomplete="name"></label>' +
+      '<p class="sub auth-hint">Адрес почты пока не подтверждается.</p>' +
+      '<p class="err" id="register-error" hidden></p>' +
+      '<button type="submit" class="btn" id="register-submit">Создать аккаунт</button>' +
+      '</form>' +
+      '<p class="sub auth-switch"><a href="#" id="auth-to-login">← Ко входу</a></p>'
+    );
+  }
+
+  // Блокирует кнопку на время запроса, снимает после (в т.ч. при ошибке).
+  function withBusyButton(btn, work) {
+    btn.disabled = true;
+    return work().then(
+      function (v) { btn.disabled = false; return v; },
+      function (e) { btn.disabled = false; throw e; }
+    );
+  }
+
+  function wireLoginForm(info) {
+    var form = document.getElementById('login-form');
+    if (form) {
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var btn = document.getElementById('login-submit');
+        setAuthMessage('login-error', '');
+        var email = document.getElementById('login-email').value.trim();
+        var password = document.getElementById('login-password').value;
+        if (!email || !password) {
+          setAuthMessage('login-error', 'Введите email и пароль.');
+          return;
+        }
+        withBusyButton(btn, function () { return authLogin(email, password); }).then(function (r) {
+          if (r.ok) { boot(); return; }
+          setAuthMessage('login-error', r.text);
+        });
+      });
+    }
+    var toRegister = document.getElementById('auth-to-register');
+    if (toRegister) {
+      toRegister.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        showRegisterView(info);
+      });
+    }
+  }
+
+  function wireRegisterForm(info) {
+    document.getElementById('register-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var btn = document.getElementById('register-submit');
+      setAuthMessage('register-error', '');
+      var email = document.getElementById('register-email').value.trim();
+      var password = document.getElementById('register-password').value;
+      var password2 = document.getElementById('register-password2').value;
+      var name = document.getElementById('register-name').value.trim();
+      if (!email) { setAuthMessage('register-error', 'Введите email.'); return; }
+      if (password.length < AUTH_MIN_PASSWORD) {
+        setAuthMessage('register-error', 'Пароль должен быть не короче ' + AUTH_MIN_PASSWORD + ' символов');
+        return;
+      }
+      if (password !== password2) { setAuthMessage('register-error', 'Пароли не совпадают'); return; }
+
+      withBusyButton(btn, function () {
+        return authPostJson('/auth/register', { email: email, password: password, name: name })
+          .then(function (r) {
+            // Сервер всегда отвечает 202 (и для занятого адреса — чтобы не раскрывать, есть ли он).
+            if (r.res.status !== 202) return { ok: false, text: authErrorText(r) };
+            return authLogin(email, password).then(function (login) {
+              if (login.ok) return login;
+              // 202, но вход не прошёл: адрес, скорее всего, уже занят чужим паролем.
+              if (login.text === 'неверный email или пароль') {
+                return {
+                  ok: false,
+                  text: 'Не удалось создать аккаунт или войти. Если этот адрес уже зарегистрирован, войдите с его паролем.',
+                };
+              }
+              return login;
+            });
+          })
+          .catch(function (err) {
+            return { ok: false, text: 'Не удалось связаться с сервером: ' + err.message };
+          });
+      }).then(function (r) {
+        if (r.ok) { boot(); return; }
+        setAuthMessage('register-error', r.text);
+      });
+    });
+    document.getElementById('auth-to-login').addEventListener('click', function (ev) {
+      ev.preventDefault();
+      showLoginView(info);
+    });
+  }
+
+  function showLoginView(info) {
+    var box = document.getElementById('auth-methods');
+    if (!box) return; // ушли с экрана, пока ждали ответ
+    box.innerHTML = loginFormHtml(info);
+    wireLoginForm(info);
+  }
+
+  function showRegisterView(info) {
+    var box = document.getElementById('auth-methods');
+    if (!box) return;
+    box.innerHTML = registerFormHtml();
+    wireRegisterForm(info);
+  }
+
+  // Общий скелет экрана входа и приглашения: заголовок и пояснение рисуются
+  // сразу, способы входа — после GET /auth/methods. Недоступность методов — тот
+  // же экран ошибки, что и недоступность /auth/me.
+  function renderAuthScreen(title, intro, message) {
+    setWide(false);
+    chatHide();
+    app.innerHTML =
+      '<h1>' + escapeHtml(title) + '</h1>' +
+      (message ? '<p class="sub" style="color:var(--inc)">' + escapeHtml(message) + '</p>' : '') +
+      '<p class="sub">' + escapeHtml(intro) + '</p>' +
+      '<div id="auth-methods"><p class="sub">Загрузка…</p></div>';
+    fetchAuthMethods()
+      .then(function (info) { showLoginView(info); })
+      .catch(function (err) {
+        if (document.getElementById('auth-methods')) renderError('Не удалось связаться с сервером: ' + err.message);
+      });
+  }
+
   // message — необязательное сообщение НАД формой входа (сейчас только
   // "Аккаунт удалён." от wireDeleteAccount ниже, см. её комментарий) —
   // единственный экран, куда пользователь попадает уже без всякой сессии
@@ -139,29 +376,19 @@
   // (тот потребовал бы отдельного клика "ОК" ровно тогда, когда действие
   // уже необратимо завершено).
   function renderLogin(message) {
-    setWide(false);
-    chatHide();
-    app.innerHTML =
-      '<h1>Кошельки</h1>' +
-      (message ? '<p class="sub" style="color:var(--inc)">' + escapeHtml(message) + '</p>' : '') +
-      '<p class="sub">Войдите через свою Google-учётную запись — сервер проверит ' +
-      'подпись токена и вернёт вас сюда уже залогиненным.</p>' +
-      googleLoginLinkHtml();
+    renderAuthScreen('Кошельки', 'Войдите, чтобы увидеть свои кошельки.', message);
   }
 
-  // Экран для /join/<token> (см. "Доступ и приглашения" ниже) — та же форма
-  // входа, что renderLogin(), но с объясняющим текстом: пользователь мог
-  // никогда раньше не открывать это приложение, ему нужен контекст, зачем
-  // Google-логин вообще на пути. Сам токен уже отложен в localStorage к
-  // моменту вызова (см. boot()) — эта функция только рисует, ничего не
-  // сохраняет сама.
+  // Экран для /join/<token> (см. "Доступ и приглашения" ниже) — тот же набор
+  // способов входа, что renderLogin(), но с объясняющим текстом: пользователь мог
+  // никогда раньше не открывать это приложение. Сам токен уже отложен в
+  // localStorage к моменту вызова (см. boot()) — эта функция только рисует.
   function renderJoinLogin() {
-    setWide(false);
-    app.innerHTML =
-      '<h1>Приглашение в кошелёк</h1>' +
-      '<p class="sub">Вас пригласили в общий кошелёк. Войдите через свою Google-учётную ' +
-      'запись — после входа приглашение примется само, и вы окажетесь внутри.</p>' +
-      googleLoginLinkHtml();
+    renderAuthScreen(
+      'Приглашение в кошелёк',
+      'Вас пригласили в общий кошелёк. Войдите или создайте аккаунт — после входа приглашение ' +
+        'примется само, и вы окажетесь внутри.'
+    );
   }
 
   function renderError(message) {
@@ -1936,6 +2163,7 @@
       '<option value="mdy">12/31/2026</option>' +
       '</select></label>' +
       '</section>' +
+      '<div id="settings-password-slot"></div>' +
       '<section class="report-section">' +
       '<h2>Устройства</h2>' +
       '<p class="sub">Активные сессии вашего аккаунта — по одной на устройство. ' +
@@ -1968,9 +2196,96 @@
     });
 
     downloadSettingsCurrencyDirectory();
+    renderSettingsPassword();
     renderMcpTokenBox();
     loadSettingsDevices();
     wireDeleteAccount();
+  }
+
+  // Секция «Пароль» (change add-password-login): только если сервер включил вход
+  // по паролю (GET /auth/methods). Недоступность методов настройки не ломает —
+  // секция просто не появляется. Есть ли у пользователя уже пароль, SPA не знает
+  // (GET /auth/me этого не отдаёт), поэтому «Текущий пароль» показывается всегда:
+  // пользователь Google оставляет его пустым, а сервер сам требует текущий пароль,
+  // если он есть (401 «неверный текущий пароль»).
+  function renderSettingsPassword() {
+    fetchAuthMethods()
+      .then(function (info) {
+        var slot = document.getElementById('settings-password-slot');
+        if (!slot || !authHasMethod(info, 'password')) return;
+        slot.innerHTML =
+          '<section class="report-section">' +
+          '<h2>Пароль</h2>' +
+          '<p class="sub">Вход по email и паролю. Если вы входили только через Google, задайте пароль — ' +
+          'им можно будет входить без Google. Если пароль уже есть, введите текущий. ' +
+          'После сохранения остальные сессии закрываются.</p>' +
+          authInsecureWarningHtml() +
+          '<form class="auth-form" id="settings-password-form" novalidate>' +
+          '<label>Текущий пароль (оставьте пустым, если пароля ещё нет)' +
+          '<input type="password" id="pw-current" autocomplete="current-password"></label>' +
+          '<label>Новый пароль<input type="password" id="pw-new" autocomplete="new-password"></label>' +
+          '<label>Повторите пароль<input type="password" id="pw-new2" autocomplete="new-password"></label>' +
+          '<p class="err" id="pw-error" hidden></p>' +
+          '<p class="auth-ok" id="pw-ok" hidden></p>' +
+          '<button type="submit" class="btn" id="pw-submit">Сохранить пароль</button>' +
+          '</form>' +
+          '</section>';
+        wireSettingsPasswordForm();
+      })
+      .catch(function () {}); // тихо — остальные секции настроек от этого не зависят
+  }
+
+  function wireSettingsPasswordForm() {
+    document.getElementById('settings-password-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      setAuthMessage('pw-error', '');
+      setAuthMessage('pw-ok', '');
+      var current = document.getElementById('pw-current').value;
+      var next = document.getElementById('pw-new').value;
+      var next2 = document.getElementById('pw-new2').value;
+      if (next.length < AUTH_MIN_PASSWORD) {
+        setAuthMessage('pw-error', 'Пароль должен быть не короче ' + AUTH_MIN_PASSWORD + ' символов');
+        return;
+      }
+      if (next !== next2) { setAuthMessage('pw-error', 'Пароли не совпадают'); return; }
+
+      var body = { password: next };
+      if (current) body.current_password = current;
+
+      // 401 с error=unauthenticated — истёк access-токен: один раз продлеваем
+      // сессию и повторяем. Другой 401 — «неверный текущий пароль»: его повторять
+      // нельзя, это считалось бы второй неудачной попыткой в лимите сервера.
+      function send() { return authPostJson('/auth/password', body); }
+      var btn = document.getElementById('pw-submit');
+      withBusyButton(btn, function () {
+        return send().then(function (r) {
+          if (r.res.status === 401 && r.data && r.data.error === 'unauthenticated') {
+            return fetch('/auth/refresh', { method: 'POST', credentials: 'include' }).then(function (rr) {
+              return rr.ok ? send() : r;
+            });
+          }
+          return r;
+        });
+      })
+        .then(function (r) {
+          if (r.res.status === 204) {
+            document.getElementById('pw-current').value = '';
+            document.getElementById('pw-new').value = '';
+            document.getElementById('pw-new2').value = '';
+            setAuthMessage('pw-ok', 'Пароль сохранён. Остальные сессии закрыты.');
+            return;
+          }
+          if (r.res.status === 401 && r.data && r.data.error === 'unauthenticated') {
+            renderLogin(); // сессия реально кончилась
+            return;
+          }
+          if (r.res.status === 401) { setAuthMessage('pw-error', 'Неверный текущий пароль.'); return; }
+          setAuthMessage('pw-error', authErrorText(r));
+        })
+        .catch(function (err) {
+          setAuthMessage('pw-error', 'Не удалось связаться с сервером: ' + err.message);
+        });
+    });
   }
 
   // "Удалить аккаунт" (Опасная зона выше) — по прямому запросу: подтверждение,
