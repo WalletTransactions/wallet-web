@@ -1814,6 +1814,7 @@ pre.st-src { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-siz
 .chat-msg-err { align-self: flex-start; background: var(--exp-tint); color: var(--exp); border-bottom-left-radius: 6px; }
 .chat-sign { margin-top: 6px; color: var(--ink4); font-size: 12.5px; }
 .chat-pending { color: var(--ink4); font-style: italic; }
+.chat-pending.chat-live { color: var(--ink); font-style: normal; } /* пошёл текст ответа (chat-live-reply) */
 .chat-divider {
   align-self: stretch; text-align: center; color: var(--ink4); font-size: 12.5px; padding: 4px 8px;
   border-top: 1px dashed var(--l14); border-bottom: 1px dashed var(--l14);
