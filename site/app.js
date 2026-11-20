@@ -11800,7 +11800,13 @@
   var chatRoot = null;
   var chatSeq = 0;
   var chatPosting = false; // POST задания в пути — второй не создаём (двойной клик)
-  var chatPollingJob = null; // job_id, по которому сейчас идёт long-poll
+  var chatPollingJob = null; // job_id, по которому сейчас идёт long-poll или поток
+  // Ответ по мере генерации (openspec chat-live-reply): в sessionStorage не
+  // сохраняется — после F5 поток читается с начала журнала.
+  var CHAT_STREAM_MAX_RECONNECTS = 3; // закрытий потока подряд без новых событий
+  var CHAT_DOTS = ['.', '..', '…'];
+  var chatLive = { text: '', tool: false, dots: 2 }; // 2 — «Думаю…», как до потока
+  var chatDotsTimer = null;
   var chatModelTitle = null; // «Модель: …»; null — не прочитана
   var chatModelRequested = false;
   var chat = chatEmptyState(null);
@@ -11985,7 +11991,10 @@
     if (!open) return;
     var log = document.getElementById('chat-log');
     var html = chat.messages.map(chatMessageHtml).join('');
-    if (chat.pending) html += '<div class="chat-msg chat-msg-ai chat-pending">Думаю…</div>';
+    if (chat.pending) {
+      html += '<div class="chat-msg chat-msg-ai chat-pending' + (chatLive.text ? ' chat-live' : '') + '">' +
+        escapeHtml(chatPendingText()) + '</div>';
+    }
     if (!html) html = '<p class="chat-hint">' + escapeHtml(CHAT_HINT) + '</p>';
     log.innerHTML = html;
     log.scrollTop = log.scrollHeight;
@@ -12062,6 +12071,7 @@
     var seq = chatSeq;
     var key = 'web-chat:' + uuidV4();
     chat.pending = { jobId: null, startedAt: Date.now(), key: key };
+    chatLive = { text: '', tool: false, dots: 2 };
     chatPosting = true;
     chatSave();
     chatRender();
@@ -12105,7 +12115,7 @@
         chat.pending.jobId = data.job_id;
         chatSave();
         chatRender();
-        chatPoll(seq, data.job_id);
+        chatStream(seq, data.job_id);
       })
       .catch(function (err) {
         chatPosting = false;
@@ -12169,6 +12179,144 @@
       });
   }
 
+  // --- Ответ по мере генерации (openspec chat-live-reply) ---
+
+  // Что в «пузыре» ожидания: накопленный текст ответа, а пока его нет —
+  // «Думаю» (после вызова инструмента «Смотрю данные») с бегущими точками.
+  function chatPendingText() {
+    if (chatLive.text) return chatLive.text;
+    return (chatLive.tool ? 'Смотрю данные' : 'Думаю') + CHAT_DOTS[chatLive.dots % 3];
+  }
+
+  // Меняет только «пузырь»: событий десятки в секунду, перерисовывать ленту целиком нельзя.
+  function chatPaintPending() {
+    var el = chatRoot ? chatRoot.querySelector('.chat-pending') : null;
+    if (!el) return;
+    el.textContent = chatPendingText();
+    el.classList.toggle('chat-live', !!chatLive.text);
+    var log = document.getElementById('chat-log');
+    if (log && log.scrollHeight - log.scrollTop - log.clientHeight < 80) log.scrollTop = log.scrollHeight; // пользователь не листал вверх
+  }
+
+  function chatStartDots() {
+    if (chatDotsTimer) return;
+    chatDotsTimer = setInterval(function () {
+      if (!chat.pending) {
+        clearInterval(chatDotsTimer);
+        chatDotsTimer = null;
+        return;
+      }
+      if (chatLive.text) return;
+      chatLive.dots += 1;
+      chatPaintPending();
+    }, 700);
+  }
+
+  // Один кадр SSE: id/event/data. null — не событие хода (комментарий, мусор).
+  function chatParseFrame(frame) {
+    var ev = { id: 0, type: '', data: null };
+    var data = '';
+    frame.split('\n').forEach(function (line) {
+      if (!line || line.charAt(0) === ':') return;
+      var i = line.indexOf(':');
+      var field = i < 0 ? line : line.slice(0, i);
+      var value = i < 0 ? '' : line.slice(i + 1).replace(/^ /, '');
+      if (field === 'id') ev.id = parseInt(value, 10) || 0;
+      else if (field === 'event') ev.type = value;
+      else if (field === 'data') data += (data ? '\n' : '') + value;
+    });
+    if (!ev.type) return null;
+    try { ev.data = data ? JSON.parse(data) : {}; } catch (e) { ev.data = {}; }
+    return ev;
+  }
+
+  // Поток событий задания (fetch + ReadableStream, не EventSource: нужны
+  // заголовки Accept и Last-Event-ID). Итог всегда берёт chatPoll — он же
+  // разбирает сбои, подпись и предел ожидания; поток только показывает черновик.
+  function chatStream(seq, jobId) {
+    if (seq !== chatSeq || !chat.pending) return;
+    chatPollingJob = jobId;
+    chatStartDots();
+    if (typeof ReadableStream === 'undefined' || typeof TextDecoder === 'undefined') {
+      chatPoll(seq, jobId);
+      return;
+    }
+    var lastId = 0;
+    var emptyCloses = 0;
+    var fellBack = false;
+
+    function fallback() {
+      if (fellBack) return;
+      fellBack = true;
+      chatPoll(seq, jobId);
+    }
+
+    function open() {
+      if (fellBack || seq !== chatSeq || !chat.pending) return;
+      if (Date.now() - chat.pending.startedAt > CHAT_WAIT_LIMIT_MS) { fallback(); return; } // предел — в chatPoll
+      var headers = { Accept: 'text/event-stream' };
+      if (lastId > 0) headers['Last-Event-ID'] = String(lastId);
+      apiFetch('/api/ai/jobs/' + encodeURIComponent(jobId) + '/events', { credentials: 'include', headers: headers })
+        .then(function (res) {
+          if (fellBack || seq !== chatSeq) return;
+          if (res.status === 401) {
+            chatPollingJob = null; // как у long-poll: после входа и F5 ожидание продолжится
+            renderLogin();
+            return;
+          }
+          var type = res.headers.get('Content-Type') || '';
+          if (!res.ok || !res.body || type.indexOf('text/event-stream') !== 0) { fallback(); return; } // потока нет (404, 429)
+          return read(res.body.getReader());
+        })
+        .catch(fallback);
+    }
+
+    function read(reader) {
+      var decoder = new TextDecoder();
+      var buf = '';
+      var progressed = false;
+      function pump() {
+        return reader.read().then(function (r) {
+          if (fellBack || seq !== chatSeq || !chat.pending) {
+            reader.cancel();
+            return;
+          }
+          if (r.done) { // гейтвей закрыл поток (30 с молчания) или обрыв
+            emptyCloses = progressed ? 0 : emptyCloses + 1;
+            if (emptyCloses >= CHAT_STREAM_MAX_RECONNECTS) fallback();
+            else open();
+            return;
+          }
+          buf += decoder.decode(r.value, { stream: true }).replace(/\r/g, '');
+          var cut;
+          while ((cut = buf.indexOf('\n\n')) >= 0) {
+            var ev = chatParseFrame(buf.slice(0, cut));
+            buf = buf.slice(cut + 2);
+            if (!ev) continue;
+            if (ev.id > lastId) lastId = ev.id;
+            progressed = true;
+            if (ev.type === 'delta' && ev.data && typeof ev.data.text === 'string') {
+              chatLive.text += ev.data.text;
+              chatPaintPending();
+            } else if (ev.type === 'tool') {
+              chatLive.text = ''; // текст перед инструментом — не ответ
+              chatLive.tool = true;
+              chatPaintPending();
+            } else if (ev.type === 'done' || ev.type === 'error') {
+              reader.cancel();
+              fallback(); // итог — из задания
+              return;
+            }
+          }
+          return pump();
+        });
+      }
+      return pump().catch(fallback);
+    }
+
+    open();
+  }
+
   function chatFinish(seq, message) {
     if (seq !== chatSeq) return;
     chat.pending = null;
@@ -12188,7 +12336,10 @@
       chatFinish(chatSeq, { role: 'error', text: CHAT_TEXT.generic });
       return;
     }
-    if (chatPollingJob !== chat.pending.jobId) chatPoll(chatSeq, chat.pending.jobId);
+    if (chatPollingJob !== chat.pending.jobId) {
+      chatLive = { text: '', tool: false, dots: 2 };
+      chatStream(chatSeq, chat.pending.jobId);
+    }
   }
 
   function boot() {
