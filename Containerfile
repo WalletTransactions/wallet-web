@@ -38,4 +38,12 @@ RUN v="$(tr -d '[:space:]' < /tmp/VERSION)" \
  && rm /tmp/VERSION
 COPY --chmod=0755 entrypoint/40-version-json.sh /docker-entrypoint.d/40-version-json.sh
 
+# Взаимный TLS внутри контура (change add-internal-mtls, задача 7.5): слушатель nginx выбирает
+# entrypoint при старте по INTERNAL_MTLS. Значения по умолчанию — чтобы `nginx -t` проходил и
+# без entrypoint.
+RUN echo 'listen 80;' > /etc/nginx/listen.conf && : > /etc/nginx/health.conf
+COPY --chmod=0755 entrypoint/45-mtls-listen.sh /docker-entrypoint.d/45-mtls-listen.sh
+# Метка поддержки взаимного TLS (design D8).
+LABEL org.wallet.mtls="1"
+
 EXPOSE 80
