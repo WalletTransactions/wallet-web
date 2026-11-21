@@ -1918,3 +1918,7 @@ APP_BUILD`, без него `<VERSION>-dev`), а `started_at` проставля
 Релиз — git-тегами: `vX.Y.Z-rc.N` публикует образ в ghcr и выкатывает его
 в test, `vX.Y.Z` на том же коммите — тот же образ в prod; `X.Y.Z` должен
 совпадать с `VERSION`. Подробно — [README google-auth, «Версия»](https://github.com/WalletTransactions/google-auth#версия), «Релиз».
+
+## Взаимный TLS внутри контура (необязательно)
+
+Change `add-internal-mtls` (wallet-infra, задача 7.5). `INTERNAL_MTLS=true` (его задаёт `compose.mtls.yaml`) вместе с файлами `/etc/wallet-tls/{tls.crt,tls.key,ca.pem}` включает `listen 80 ssl` с `ssl_verify_client on`: клиентский сертификат от CA контура обязателен (без него nginx отвечает 400 «No required SSL certificate»). Healthcheck контейнера ходит на loopback-порт `127.0.0.1:8081/healthz`, снаружи недоступный. Слушатель выбирает `entrypoint/45-mtls-listen.sh` при старте; без `INTERNAL_MTLS` — обычный `listen 80;`, как раньше. Нет файлов сертификата при включённом режиме — ошибка старта.
