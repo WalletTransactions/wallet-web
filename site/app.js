@@ -8757,7 +8757,7 @@
     bind('ai-date', 'date', 'input');
     bind('ai-time', 'time', 'input');
     bind('ai-comment', 'comment', 'input');
-    document.getElementById('ai-save-btn').addEventListener('click', function () { aiPush(false); });
+    document.getElementById('ai-save-btn').addEventListener('click', function () { aiPush(); });
     document.getElementById('ai-card-cancel-btn').addEventListener('click', function () {
       aiCard = null;
       aiPhase = 'input';
@@ -8941,11 +8941,47 @@
     missing_reference: 'Кошелёк или категория удалены — выберите другие',
   };
 
-  // POST /sync/push — одна операция расхода: acc_fr — кошелёк, acc_to —
-  // категория. retriedDevice — уже был один повтор после device_required
-  // (сессия, выпущенная до выдачи браузеру device_id: /auth/refresh даёт
-  // токен с ним).
-  function aiPush(retriedDevice) {
+  // POST /sync/push — одна операция (add-manual-operation: общая запись для
+  // ИИ-карточки и формы «+ Операция»). op — строка operation[]; batchId —
+  // ключ идемпотентности, повтор с тем же значением безопасен. Один повтор
+  // после 403 device_required (сессия, выпущенная до выдачи браузеру device_id:
+  // /auth/refresh даёт токен с ним). Результат —
+  // {unauthorized: true} (401, уже показан экран входа), либо
+  // {ok, status, code, data}: code — поле error ответа; status 0 — сеть.
+  function pushOperation(op, batchId, retriedDevice) {
+    return apiFetch('/sync/push', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batch_id: batchId,
+        device_name: 'Веб-браузер',
+        changes: { operation: [op] },
+      }),
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          renderLogin();
+          return { unauthorized: true };
+        }
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          var code = data && data.error ? data.error : '';
+          if (res.status === 403 && code === 'device_required' && !retriedDevice) {
+            return fetch('/auth/refresh', { method: 'POST', credentials: 'include' }).then(function () {
+              return pushOperation(op, batchId, true);
+            });
+          }
+          return { ok: res.ok, status: res.status, code: code, data: data };
+        });
+      })
+      .catch(function () {
+        return { ok: false, status: 0, code: '', data: {} };
+      });
+  }
+
+  // Запись операции расхода из карточки ИИ: acc_fr — кошелёк, acc_to —
+  // категория.
+  function aiPush() {
     var card = aiCard;
     if (!card || card.busy) return;
     var p = aiCardProblems(card);
@@ -8969,75 +9005,414 @@
       aiUpdateCardState();
     }
 
-    apiFetch('/sync/push', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        batch_id: card.batchId,
-        device_name: 'Веб-браузер',
-        changes: {
-          operation: [{
-            uuid: card.opUuid,
-            date: card.date + ' ' + time,
-            acc_fr_uuid: wallet.uuid,
-            acc_to_uuid: category.uuid,
-            amount: amount,
-            comment: card.comment,
-          }],
-        },
-      }),
-    })
-      .then(function (res) {
-        if (res.status === 401) {
-          renderLogin();
+    pushOperation({
+      uuid: card.opUuid,
+      date: card.date + ' ' + time,
+      acc_fr_uuid: wallet.uuid,
+      acc_to_uuid: category.uuid,
+      amount: amount,
+      comment: card.comment,
+    }, card.batchId).then(function (r) {
+      if (r.unauthorized) return;
+      if (r.ok) {
+        setAiLastWallet(wallet.uuid);
+        aiDoneLine = 'Записано: ' + fmtNative(amount, wallet.symbol || wallet.iso_code) + ' · ' +
+          escapeHtml(category.name) + ' · ' + escapeHtml(wallet.name);
+        aiCard = null;
+        aiText = '';
+        aiPhase = 'input';
+        renderAiRoot();
+        // Новая трата должна появиться в отчётах без F5 — как при смене периода.
+        reportsCache = {};
+        refreshPeriod();
+        return;
+      }
+      if (r.status === 403 && r.code === 'device_required') {
+        // Повтор после /auth/refresh уже был в pushOperation.
+        finish('Перезайдите, чтобы записывать траты из браузера');
+        return;
+      }
+      if (r.status === 409 && r.code === 'missing_reference') {
+        finish(AI_PUSH_ERROR_TEXT.missing_reference);
+        aiLoadAccounts(true).then(function () {
+          if (aiCard !== card) return;
+          if (!aiFindWallet(card.walletUuid)) card.walletUuid = '';
+          if (!aiFindCategory(card.categoryUuid)) card.categoryUuid = '';
+          renderAiRoot();
+        });
+        return;
+      }
+      if (r.status === 0 || r.status >= 500) {
+        finish('Не удалось записать, попробуйте ещё раз');
+        return;
+      }
+      finish(AI_PUSH_ERROR_TEXT[r.code] || r.code || 'HTTP ' + r.status);
+    });
+  }
+
+  // --- «Список операций» → «+ Операция» (add-manual-operation) ---------------
+  // Ручная запись ОДНОЙ проводки дохода или расхода: форма в <dialog> (на
+  // телефоне — на весь экран), запись — pushOperation() (тот же путь, что у
+  // ИИ-карточки). Расход: кошелёк → статья, доход: статья → кошелёк. Кошельки и
+  // статьи — из aiLoadAccounts() (общий справочник с ИИ), без долговых
+  // кошельков; статьи фильтруются по category_kind (0 расход, 1 доход, 2 оба),
+  // а пока wallet-report его не отдаёт — показываются все.
+  var opForm = null; // null — форма закрыта
+  var opFlash = null; // {html, date} — строка «Записано: …» над лентой
+
+  var OP_ERROR_TEXT = {
+    reader_cannot_write: 'Вы читатель в этом леджере — добавлять операции нельзя',
+    missing_reference: 'Кошелёк или статья удалены — выберите другие',
+  };
+
+  function opDialogEl() {
+    return document.getElementById('op-dialog');
+  }
+
+  function opNewForm() {
+    var now = new Date();
+    return {
+      batchId: uuidV4(), // один раз на открытие: повтор после сбоя идёт с теми же значениями
+      opUuid: uuidV4(),
+      type: 'expense', // 'expense' | 'income'
+      amount: '',
+      amountTouched: false,
+      walletUuid: '',
+      categoryUuid: '',
+      date: isoDate(now),
+      time: pad2(now.getHours()) + ':' + pad2(now.getMinutes()),
+      comment: '',
+      loading: true,
+      loadError: '',
+      busy: false,
+      error: '',
+    };
+  }
+
+  function opWallets() {
+    if (!aiAccounts) return [];
+    return aiAccounts.wallets.filter(function (a) { return !a.counterparty_uuid; });
+  }
+
+  // Статьи под тип операции. Нет category_kind (старый wallet-report) — все.
+  function opCategories(type) {
+    if (!aiAccounts) return [];
+    return aiAccounts.categories.filter(function (a) {
+      if (typeof a.category_kind !== 'number') return true;
+      return a.category_kind === 2 || a.category_kind === (type === 'income' ? 1 : 0);
+    });
+  }
+
+  function opFindIn(list, uuid) {
+    if (!uuid) return null;
+    for (var i = 0; i < list.length; i++) if (list[i].uuid === uuid) return list[i];
+    return null;
+  }
+
+  // Что не так с полями. amount — текст подсказки или '' (пустую сумму до
+  // первого ввода не ругаем, но «Записать» остаётся неактивной).
+  function opProblems(f) {
+    var p = { amount: '', amountEmpty: false, wallet: false, category: false, date: false };
+    var wallet = opFindIn(opWallets(), f.walletUuid);
+    var raw = f.amount.trim().replace(',', '.');
+    var m = /^(\d+)(?:\.(\d+))?$/.exec(raw);
+    var precision = wallet ? parseInt(wallet.precision || '2', 10) : 2;
+    if (!raw) {
+      p.amountEmpty = true;
+    } else if (!m || parseFloat(raw) <= 0) {
+      p.amount = 'Сумма — положительное число';
+    } else if (m[2] && m[2].length > precision) {
+      p.amount = precision === 0 ? 'В этой валюте без дробной части' : 'Не больше ' + precision + ' знаков после запятой';
+    }
+    if (!wallet) p.wallet = true;
+    if (!opFindIn(opCategories(f.type), f.categoryUuid)) p.category = true;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) p.date = true;
+    return p;
+  }
+
+  function opHasProblems(p) {
+    return !!(p.amount || p.amountEmpty || p.wallet || p.category || p.date);
+  }
+
+  function opFormHtml(f) {
+    var title = '<h2 class="cur-dialog-title">Новая операция</h2>';
+    if (f.loading) return '<div class="cur-dialog-body">' + title + '<p class="sub">Загрузка…</p></div>';
+    if (f.loadError) {
+      return '<div class="cur-dialog-body">' + title + reportsErrorHtml(f.loadError) +
+        '<div class="ai-card-actions"><button type="button" class="btn btn-secondary" id="op-cancel-btn">Закрыть</button></div></div>';
+    }
+    var wallet = opFindIn(opWallets(), f.walletUuid);
+    function seg(type, label) {
+      return '<button type="button" class="ops-seg-btn' + (f.type === type ? ' active' : '') +
+        '" data-op-type="' + type + '">' + label + '</button>';
+    }
+    return (
+      '<form class="cur-dialog-body op-form" method="dialog" novalidate>' + title +
+      '<div class="ops-seg-group op-type" role="group" aria-label="Тип операции">' +
+      seg('expense', 'Расход') + seg('income', 'Доход') + '</div>' +
+      '<div class="ai-card-grid">' +
+      '<label class="ai-field">Сумма<span class="ai-amount-row">' +
+      '<input type="text" inputmode="decimal" id="op-amount" autocomplete="off" value="' + escapeHtml(f.amount) + '">' +
+      '<span class="ai-currency" id="op-currency">' + escapeHtml(wallet ? wallet.iso_code : '—') + '</span>' +
+      '</span><span class="ai-field-hint" id="op-amount-hint" hidden></span></label>' +
+      '<label class="ai-field">Кошелёк<select id="op-wallet">' +
+      aiOptionsHtml(opWallets(), f.walletUuid, [], null, 'Выберите кошелёк') + '</select></label>' +
+      '<label class="ai-field">Статья<select id="op-category">' +
+      aiOptionsHtml(opCategories(f.type), f.categoryUuid, [], null, 'Выберите статью') + '</select></label>' +
+      '<label class="ai-field">Дата и время<span class="ai-datetime-row">' +
+      '<input type="date" id="op-date" value="' + escapeHtml(f.date) + '">' +
+      '<input type="time" id="op-time" value="' + escapeHtml(f.time) + '">' +
+      '</span></label>' +
+      '<label class="ai-field ai-field-wide">Комментарий' +
+      '<input type="text" id="op-comment" value="' + escapeHtml(f.comment) + '"></label>' +
+      '</div>' +
+      '<p class="err ai-card-error" id="op-error" hidden></p>' +
+      '<div class="ai-card-actions">' +
+      '<button type="button" class="btn" id="op-save-btn">Записать</button>' +
+      '<button type="button" class="btn btn-secondary" id="op-cancel-btn">Отмена</button>' +
+      '</div></form>'
+    );
+  }
+
+  function renderOpDialog() {
+    var dlg = opDialogEl();
+    if (!dlg || !opForm) return;
+    dlg.innerHTML = opFormHtml(opForm);
+    opUpdateState();
+  }
+
+  // Подсветка полей, подсказка по сумме, кнопка и ошибка — без перерисовки,
+  // чтобы не терять фокус и позицию курсора при вводе.
+  function opUpdateState() {
+    var f = opForm;
+    if (!f || f.loading || f.loadError) return;
+    var p = opProblems(f);
+    var amountEl = document.getElementById('op-amount');
+    var hintEl = document.getElementById('op-amount-hint');
+    var shown = f.amountTouched && !!p.amount;
+    if (amountEl) amountEl.classList.toggle('invalid', shown);
+    if (hintEl) {
+      hintEl.hidden = !shown;
+      hintEl.textContent = shown ? p.amount : '';
+    }
+    var wallet = opFindIn(opWallets(), f.walletUuid);
+    var curEl = document.getElementById('op-currency');
+    if (curEl) curEl.textContent = wallet ? wallet.iso_code : '—';
+    var dateEl = document.getElementById('op-date');
+    if (dateEl) dateEl.classList.toggle('invalid', p.date);
+    var saveBtn = document.getElementById('op-save-btn');
+    if (saveBtn) {
+      saveBtn.disabled = f.busy || opHasProblems(p);
+      saveBtn.textContent = f.busy ? 'Записываю…' : 'Записать';
+    }
+    var errEl = document.getElementById('op-error');
+    if (errEl) {
+      errEl.hidden = !f.error;
+      errEl.textContent = f.error;
+    }
+  }
+
+  function opOpen() {
+    var dlg = opDialogEl();
+    if (!dlg || opForm) return;
+    var f = opNewForm();
+    opForm = f;
+    renderOpDialog();
+    if (!dlg.open) dlg.showModal();
+    aiLoadAccounts(false)
+      .then(function (data) {
+        if (opForm !== f) return;
+        if (!data) { // 401 — сессией займётся общий обработчик
+          opClose();
           return;
         }
-        return res.json().catch(function () { return {}; }).then(function (data) {
-          var code = data && data.error ? data.error : '';
-          if (res.ok) {
-            setAiLastWallet(wallet.uuid);
-            aiDoneLine = 'Записано: ' + fmtNative(amount, wallet.symbol || wallet.iso_code) + ' · ' +
-              escapeHtml(category.name) + ' · ' + escapeHtml(wallet.name);
-            aiCard = null;
-            aiText = '';
-            aiPhase = 'input';
-            renderAiRoot();
-            // Новая трата должна появиться в отчётах без F5 — как при смене периода.
-            reportsCache = {};
-            refreshPeriod();
-            return;
-          }
-          if (res.status === 403 && code === 'device_required') {
-            if (retriedDevice) {
-              finish('Перезайдите, чтобы записывать траты из браузера');
-              return;
-            }
-            return fetch('/auth/refresh', { method: 'POST', credentials: 'include' }).then(function () {
-              card.busy = false;
-              aiPush(true);
-            });
-          }
-          if (res.status === 409 && code === 'missing_reference') {
-            finish(AI_PUSH_ERROR_TEXT.missing_reference);
-            aiLoadAccounts(true).then(function () {
-              if (aiCard !== card) return;
-              if (!aiFindWallet(card.walletUuid)) card.walletUuid = '';
-              if (!aiFindCategory(card.categoryUuid)) card.categoryUuid = '';
-              renderAiRoot();
-            });
-            return;
-          }
-          if (res.status >= 500) {
-            finish('Не удалось записать, попробуйте ещё раз');
-            return;
-          }
-          finish(AI_PUSH_ERROR_TEXT[code] || code || 'HTTP ' + res.status);
-        });
+        f.loading = false;
+        // Кошелёк по умолчанию — последний, с которого записывали в этом браузере.
+        var last = getAiLastWallet();
+        if (last && opFindIn(opWallets(), last)) f.walletUuid = last;
+        renderOpDialog();
+        var amountEl = document.getElementById('op-amount');
+        if (amountEl) amountEl.focus();
       })
-      .catch(function () {
-        finish('Не удалось записать, попробуйте ещё раз');
+      .catch(function (err) {
+        if (opForm !== f) return;
+        f.loading = false;
+        f.loadError = 'Не удалось загрузить кошельки: ' + err.message;
+        renderOpDialog();
       });
+  }
+
+  function opClose() {
+    opForm = null;
+    var dlg = opDialogEl();
+    if (dlg && dlg.open) dlg.close();
+  }
+
+  function opSetType(type) {
+    var f = opForm;
+    if (!f || f.busy || f.type === type) return;
+    f.type = type;
+    // Статья не подходит новому типу — сбрасываем; остальное сохраняется.
+    if (!opFindIn(opCategories(type), f.categoryUuid)) f.categoryUuid = '';
+    renderOpDialog();
+  }
+
+  function opRenderFlash() {
+    var el = document.getElementById('ops-flash');
+    if (!el) return;
+    if (!opFlash) {
+      el.hidden = true;
+      el.innerHTML = '';
+      return;
+    }
+    var from = document.getElementById('period-from').value;
+    var to = document.getElementById('period-to').value;
+    var outside = opFlash.date < from || opFlash.date > to;
+    el.hidden = false;
+    el.innerHTML = '<span>' + opFlash.html + (outside ? ' — вне выбранного периода' : '') + '</span>' +
+      (outside ? '<button type="button" class="btn btn-secondary" id="op-flash-show-btn">Показать</button>' : '');
+  }
+
+  // «Показать»: период — на календарный месяц операции, как ручной выбор.
+  function opShowFlashPeriod() {
+    if (!opFlash) return;
+    var from = opFlash.date.slice(0, 8) + '01';
+    var to = lastDayOfMonth(from);
+    document.getElementById('period-from').value = from;
+    document.getElementById('period-to').value = to;
+    setPeriodPreference(from, to, groupByValue());
+    opFlash = null;
+    opRenderFlash();
+    refreshPeriod();
+  }
+
+  function opSave() {
+    var f = opForm;
+    if (!f || f.busy) return;
+    var p = opProblems(f);
+    if (opHasProblems(p)) return;
+    var wallet = opFindIn(opWallets(), f.walletUuid);
+    var category = opFindIn(opCategories(f.type), f.categoryUuid);
+    var amount = f.amount.trim().replace(',', '.');
+    var time = f.time || '00:00';
+    if (time.length === 5) time += ':00';
+    var income = f.type === 'income';
+    f.busy = true;
+    f.error = '';
+    opUpdateState();
+
+    function finish(error) {
+      f.busy = false;
+      f.error = error;
+      if (opForm !== f) return;
+      opUpdateState();
+    }
+
+    pushOperation({
+      uuid: f.opUuid,
+      date: f.date + ' ' + time,
+      acc_fr_uuid: income ? category.uuid : wallet.uuid,
+      acc_to_uuid: income ? wallet.uuid : category.uuid,
+      amount: amount,
+      comment: f.comment,
+    }, f.batchId).then(function (r) {
+      if (r.unauthorized) return;
+      if (r.ok) {
+        setAiLastWallet(wallet.uuid);
+        opFlash = {
+          date: f.date,
+          html: 'Записано: ' + fmtNative(amount, wallet.symbol || wallet.iso_code) + ' · ' +
+            escapeHtml(category.name) + ' · ' + escapeHtml(wallet.name),
+        };
+        opClose();
+        // Новая операция должна появиться в отчётах без F5 — как при смене периода.
+        reportsCache = {};
+        opRenderFlash();
+        refreshPeriod();
+        return;
+      }
+      if (r.status === 403 && r.code === 'device_required') {
+        finish('Перезайдите, чтобы записывать операции из браузера');
+        return;
+      }
+      if (r.status === 409 && r.code === 'missing_reference') {
+        finish(OP_ERROR_TEXT.missing_reference);
+        aiLoadAccounts(true).then(function () {
+          if (opForm !== f) return;
+          if (!opFindIn(opWallets(), f.walletUuid)) f.walletUuid = '';
+          if (!opFindIn(opCategories(f.type), f.categoryUuid)) f.categoryUuid = '';
+          renderOpDialog(); // заодно показывает f.error
+        });
+        return;
+      }
+      if (r.status === 0 || r.status >= 500) {
+        finish('Не удалось записать, попробуйте ещё раз');
+        return;
+      }
+      finish(OP_ERROR_TEXT[r.code] || r.code || 'HTTP ' + r.status);
+    });
+  }
+
+  function wireOpDialog() {
+    opForm = null;
+    opFlash = null;
+    var dlg = opDialogEl();
+    var addBtn = document.getElementById('ops-add-btn');
+    if (addBtn) addBtn.addEventListener('click', opOpen);
+    var flash = document.getElementById('ops-flash');
+    if (flash) {
+      flash.addEventListener('click', function (ev) {
+        if (ev.target.closest('#op-flash-show-btn')) opShowFlashPeriod();
+      });
+    }
+    if (!dlg) return;
+
+    // Esc: нативный cancel закрыл бы окно, но не сбросил бы форму.
+    dlg.addEventListener('cancel', function (ev) {
+      ev.preventDefault();
+      if (!opForm || !opForm.busy) opClose();
+    });
+    dlg.addEventListener('submit', function (ev) { ev.preventDefault(); });
+
+    dlg.addEventListener('input', function (ev) {
+      var f = opForm;
+      var t = ev.target;
+      if (!f) return;
+      if (t.id === 'op-amount') { f.amount = t.value; f.amountTouched = true; }
+      else if (t.id === 'op-comment') f.comment = t.value;
+      else if (t.id === 'op-date') f.date = t.value;
+      else if (t.id === 'op-time') f.time = t.value;
+      else return;
+      opUpdateState();
+    });
+
+    dlg.addEventListener('change', function (ev) {
+      var f = opForm;
+      var t = ev.target;
+      if (!f) return;
+      if (t.id === 'op-wallet') {
+        f.walletUuid = t.value;
+        f.amountTouched = f.amountTouched || !!f.amount; // знаков стало меньше или больше — подсказка по сумме
+      } else if (t.id === 'op-category') f.categoryUuid = t.value;
+      else return;
+      opUpdateState();
+    });
+
+    dlg.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && ev.target.tagName === 'INPUT') {
+        ev.preventDefault();
+        opSave();
+      }
+    });
+
+    dlg.addEventListener('click', function (ev) {
+      var el;
+      // Клик по самому <dialog> (не по .cur-dialog-body) — по затемнению вокруг окна.
+      if (ev.target === dlg) { if (!opForm || !opForm.busy) opClose(); return; }
+      if (ev.target.closest('#op-cancel-btn')) { if (!opForm || !opForm.busy) opClose(); return; }
+      if (ev.target.closest('#op-save-btn')) { opSave(); return; }
+      if ((el = ev.target.closest('[data-op-type]'))) opSetType(el.getAttribute('data-op-type'));
+    });
   }
 
   // --- «ИИ» → «Импорт выписки» (add-ai-statement-import) -------------------
@@ -11222,13 +11597,18 @@
       '<section class="report-section ops-toolbar">' +
       '<div class="ops-search-row">' +
       '<input type="text" id="ops-search" placeholder="Место, статья, кошелёк">' +
+      '<button type="button" class="btn ops-add-btn" id="ops-add-btn">+ Операция</button>' +
       '</div>' +
+      '<div class="ai-status ai-status-done ops-flash" id="ops-flash" hidden></div>' +
       '<div id="ops-filters"></div>' +
       '</section>' +
       '<section class="report-section"><div id="ops-list"><p class="sub">Загрузка…</p></div></section>' +
       '</div>' +
       '<div class="ops-sidebar" id="ops-sidebar"></div>' +
       '</div>' +
+      // Форма «+ Операция» (add-manual-operation): внутри своего вида, а не в
+      // скрытом чужом — модальное окно в display:none-предке не рисуется.
+      '<dialog id="op-dialog" class="cur-dialog op-dialog" aria-label="Новая операция"></dialog>' +
       '</div>' +
       '<div id="view-struct" hidden>' +
       '<div class="structure-grid">' +
@@ -11393,6 +11773,7 @@
     wireMobileHeaderOnce();
 
     wireOpsEvents();
+    wireOpDialog();
     wireOpsInfiniteScroll();
     wireCatsEvents();
     wireWalletEvents();
