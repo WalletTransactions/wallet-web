@@ -755,6 +755,18 @@ tr.device-current { background: var(--sand2); }
   width: 100%; box-sizing: border-box; height: 40px; border-radius: 999px; border: 1.5px solid var(--l14);
   background: var(--bg); padding: 0 16px; font-family: inherit; font-size: 14px; color: var(--ink); outline: none;
 }
+/* «+ Операция» (add-manual-operation): кнопка в одной строке с поиском, строка
+   «Записано: …» над лентой, форма — <dialog class="cur-dialog op-dialog">. */
+.ops-search-row { display: flex; align-items: center; gap: 10px; }
+.ops-search-row input { flex: 1 1 auto; min-width: 0; width: auto; }
+.ops-add-btn { margin: 0; flex: none; white-space: nowrap; height: 40px; padding-top: 0; padding-bottom: 0; }
+.ops-flash { margin: 0 0 12px; }
+.ops-flash[hidden] { display: none; }
+.ops-flash .btn { margin: 0 0 0 auto; }
+.op-form .op-type { margin: 10px 0 14px; width: fit-content; }
+.op-dialog .ai-card-actions .btn:disabled { opacity: .45; cursor: default; }
+.op-dialog .ai-card-actions .btn:not(.btn-secondary):disabled:hover { background: var(--acc); }
+.op-dialog .ai-field-hint { margin-top: 2px; }
 .ops-toolbar-row { display: flex; align-items: center; gap: 10px; margin: 12px 0 10px; }
 .ops-toolbar-row .link-btn { margin-left: auto; }
 .ops-seg-group { display: flex; gap: 4px; background: var(--sand); border-radius: 999px; padding: 3px; }
@@ -1496,6 +1508,20 @@ tr.device-current { background: var(--sand2); }
   .ai-field input, .ai-field select, .ai-input textarea { font-size: 16px; } /* 16px — иначе iOS зумит при фокусе */
   .ai-card-actions .btn { flex: 1; justify-content: center; text-align: center; }
   .ai-status .btn { margin-left: 0; }
+}
+
+/* Форма «+ Операция» на телефоне — полноэкранный лист (add-manual-operation). */
+@media (max-width: 720px) {
+  .op-dialog {
+    width: 100vw; max-width: none; height: 100vh; height: 100dvh; max-height: none;
+    margin: 0; border-radius: 0; overflow-y: auto;
+  }
+  .op-dialog .ai-field input, .op-dialog .ai-field select { font-size: 16px; }
+  .op-dialog .ai-card-grid { grid-template-columns: 1fr; }
+  .op-dialog .ai-datetime-row { flex-direction: row; }
+  .op-dialog .ai-card-actions .btn { flex: 1; justify-content: center; text-align: center; }
+  .ops-flash { flex-wrap: wrap; }
+  .ops-flash .btn { margin-left: 0; }
 }
 
 /* «Справка» (app.js::renderDocsRoot, docs-assistant): поле и строка кнопки —
