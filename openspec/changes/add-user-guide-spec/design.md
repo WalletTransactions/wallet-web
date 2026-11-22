@@ -58,9 +58,13 @@ Telegram и MCP она шире, у Android — только `android-wallet`. �
 защищает от ухудшения при будущих правках текста.
 
 **Другие сервисы:** правок `wallet-docs`, `wallet-gateway`, `wallet-ai`,
-`google-auth` не требуется. Индекс `wallet-web` заливается Jenkins-ом при сборке
-репозитория; новый файл спеки попадает туда автоматически (путь
-`openspec/specs/user-guide/spec.md` уже входит в индексируемые).
+`google-auth` не требуется. Индекс заливает job `docs-index` (ночью, только test)
+скриптом `wallet-infra/infra/env/docs-index.sh` из рабочей папки организации, а не из
+git. Файлы в `openspec/changes/<имя>/` получают вид `change` и доступны только
+администратору, поэтому пользователю справка покажет спеку лишь после того, как она
+окажется в `openspec/specs/user-guide/spec.md`. Поэтому спека синхронизируется в
+основные спеки (`openspec-sync-specs`) до приёмки, а change архивируется после
+неё, не раньше.
 
 ## Risks / Trade-offs
 
