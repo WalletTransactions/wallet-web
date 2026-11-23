@@ -1967,9 +1967,10 @@
   // Валюта эквивалента — то же самое значение, что #eq-currency на
   // "Отчётах" (см. eqCurrencyValue/selectCurrency ниже), но с персистом в
   // localStorage: раньше "Отчёты" при каждом заходе молча откатывались на
-  // "USD" (см. разметку renderReports) — теперь стартуют с последнего
+  // заглушку из разметки renderReports — теперь стартуют с последнего
   // выбора пользователя, а сам выбор можно поменять и отсюда, не только
   // пикером на "Отчётах" (тот тоже пишет в этот же ключ, см. selectCurrency).
+  // С user-eq-currency выбор ещё и на сервере — см. saveEqCurrencyOnServer.
   var EQ_CURRENCY_PREF_KEY = 'eqCurrencyPreference';
 
   function getEqCurrencyPreference() {
@@ -1986,6 +1987,74 @@
     } catch (e) {
       // см. getEqCurrencyPreference — предпочтение просто не переживёт эту вкладку
     }
+  }
+
+  // Выбор хранится и на сервере (user-eq-currency): PUT /api/settings
+  // wallet-api, его читают другие браузеры (preferred_eq_currency в
+  // GET /api/reports/currencies, см. applyCurrencyDirectory) и чат (MCP).
+  // localStorage остаётся — с ним «Отчёты» рисуются сразу, до ответа
+  // справочника. Валюта, которую автовыбор взял сам (сохранённой нет у
+  // леджера), в localStorage не пишется — иначе при следующей загрузке
+  // перенос отправил бы её на сервер как выбор пользователя; живёт в памяти
+  // вкладки, чтобы пикер «Настроек» показывал то же, что «Отчёты».
+  var eqCurrencyAuto = null;
+
+  // Заглушка до загрузки справочника: сохранённый код или EUR.
+  function eqCurrencyPlaceholder() {
+    return eqCurrencyAuto || getEqCurrencyPreference() || 'EUR';
+  }
+
+  // Ошибка последнего PUT — подпись под обоими пикерами; выбор не
+  // откатывается (он уже в localStorage и на кнопке). Ответы старых PUT,
+  // пришедшие после более нового, подпись не трогают (eqCurrencySaveSeq).
+  var EQ_CURRENCY_SAVE_ERROR = 'Не удалось сохранить валюту на сервере';
+  var eqCurrencySaveFailed = false;
+  var eqCurrencySaveSeq = 0;
+
+  function eqCurrencySaveErrorHtml(id) {
+    return '<span class="eq-currency-save-err" id="' + id + '"' + (eqCurrencySaveFailed ? '' : ' hidden') + '>' +
+      EQ_CURRENCY_SAVE_ERROR + '</span>';
+  }
+
+  function renderEqCurrencySaveError() {
+    ['currency-save-error', 'settings-currency-save-error'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.hidden = !eqCurrencySaveFailed;
+    });
+  }
+
+  // Выход: следующий пользователь в той же вкладке (без перезагрузки)
+  // снова начинает с выбора на сервере, без чужой подписи об ошибке.
+  function resetEqCurrencySession() {
+    eqCurrencyInitialDone = false;
+    eqCurrencyAuto = null;
+    eqCurrencySaveFailed = false;
+    eqCurrencySaveSeq++;
+  }
+
+  // showError — только для выбора в пикере; перенос (см. applyCurrencyDirectory)
+  // падает молча: на старом wallet-api ручки нет, а пользователь ничего не выбирал.
+  // В режиме «Посмотреть как клиент» на сервер не пишем: это чужой леджер,
+  // а PUT ушёл бы в настройки самого сотрудника поддержки.
+  function saveEqCurrencyOnServer(iso, showError) {
+    if (viewAsUser) return;
+    var seq = ++eqCurrencySaveSeq;
+    apiJson('/api/settings', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ eq_currency: iso }),
+    })
+      .then(function (res) {
+        if (seq !== eqCurrencySaveSeq || !res) return; // null — 401, renderLogin() уже вызван
+        eqCurrencySaveFailed = false;
+        renderEqCurrencySaveError();
+      })
+      .catch(function () {
+        if (seq !== eqCurrencySaveSeq || !showError) return;
+        eqCurrencySaveFailed = true;
+        renderEqCurrencySaveError();
+      });
   }
 
   // Формат отображения дат (по прямому запросу, дефолт дд.мм.гггг) — только
@@ -2048,9 +2117,10 @@
   // (currencyRowHtml/categoryIconHtml, style.css), не select с <option>.
   // Отдельные функции от wireCurrencyPicker/selectCurrency на "Отчётах":
   // здесь нет #eq-currency и refreshPeriod() — только чтение/запись
-  // eqCurrencyPreference в localStorage, тем же ключом (см. selectCurrency).
+  // eqCurrencyPreference в localStorage, тем же ключом (см. selectCurrency),
+  // плюс PUT /api/settings (saveEqCurrencyOnServer).
   function settingsCurrencyValue() {
-    return getEqCurrencyPreference() || 'USD';
+    return eqCurrencyPlaceholder();
   }
 
   function renderSettingsCurrencyPickerList() {
@@ -2079,6 +2149,8 @@
 
   function selectSettingsCurrency(iso) {
     setEqCurrencyPreference(iso); // тот же ключ, что читает пикер на "Отчётах" (selectCurrency)
+    eqCurrencyAuto = null;
+    saveEqCurrencyOnServer(iso, true);
     renderSettingsCurrencyPickerButton();
     renderSettingsCurrencyPickerList();
     closeSettingsCurrencyPickerList();
@@ -2093,6 +2165,10 @@
       listEl.hidden = !listEl.hidden;
     });
     listEl.addEventListener('click', function (ev) {
+      // Список внутри <label>: без preventDefault клик по строке активирует
+      // label, тот «кликает» кнопку пикера, и только что закрытый список
+      // открывается снова.
+      ev.preventDefault();
       var row = ev.target.closest('.currency-picker-row');
       if (row) selectSettingsCurrency(row.getAttribute('data-iso'));
     });
@@ -2121,11 +2197,7 @@
     fetchReport('currencies', {})
       .then(function (data) {
         if (!data || !data.currencies.length) return;
-        currencyDirectory = data.currencies;
-        currencySymbolByIso = {};
-        data.currencies.forEach(function (c) { currencySymbolByIso[c.iso_code] = c.symbol; });
-        renderSettingsCurrencyPickerList(); // ушли со страницы раньше — оба elementById вернут null внутри, не страшно
-        renderSettingsCurrencyPickerButton();
+        applyCurrencyDirectory(data); // сам перерисует пикер; ушли со страницы раньше — elementById вернут null, не страшно
       })
       .catch(function () {}); // тихо — тот же справочник ещё раз запросят "Отчёты"
   }
@@ -2141,7 +2213,8 @@
       '<button type="button" class="btn btn-secondary" id="settings-back-btn">← Назад</button>' +
       '<section class="report-section">' +
       '<h2>Валюта эквивалента</h2>' +
-      '<p class="sub">Валюта, в которой по умолчанию открываются «Отчёты» — запоминается в этом браузере.</p>' +
+      '<p class="sub">Валюта, в которой по умолчанию открываются «Отчёты» — сохраняется в аккаунте: ' +
+      'её видят другие браузеры и чат.</p>' +
       '<label class="currency-picker" id="settings-currency-picker">' + // <label>, не <div> — тот же тег, что и у пикера на "Отчётах" (inline по умолчанию, иначе растянулся бы на всю ширину секции)
       '<button type="button" class="currency-picker-btn" id="settings-currency-picker-btn">' +
       '<span class="currency-picker-display" id="settings-currency-picker-display"><span class="currency-picker-flag"></span><span>' +
@@ -2151,6 +2224,7 @@
       'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
       '</button>' +
       '<div class="currency-picker-list" id="settings-currency-picker-list" hidden></div>' +
+      eqCurrencySaveErrorHtml('settings-currency-save-error') +
       '</label>' +
       '</section>' +
       '<section class="report-section">' +
@@ -2319,6 +2393,7 @@
             if (!authData) return; // 401 — сессия и так уже не пережила бы этот момент
             viewAsUser = null; // тот же приём, что logout-btn — не переживает выход
             currentUser = null;
+            resetEqCurrencySession();
             chatForget();
             renderLogin('Аккаунт удалён.');
           });
@@ -2633,7 +2708,7 @@
   }
 
   function eqCurrencyValue() {
-    return document.getElementById('eq-currency').value.trim().toUpperCase() || 'USD';
+    return document.getElementById('eq-currency').value.trim().toUpperCase() || eqCurrencyPlaceholder();
   }
 
   // Справочник валют — сами строки {uuid, iso_code, name, symbol,
@@ -2715,9 +2790,18 @@
   // кэша везде, где эта валюта участвует — включая вкладки, до которых
   // refreshPeriod() дойдёт не сразу (Структура/Динамика/Список
   // операций/Категории — она и их всех перезапрашивает, см. её код).
+  // selectCurrency — выбор пользователя (localStorage + PUT /api/settings);
+  // setReportsEqCurrency — только смена на экране, для автовыбора в
+  // applyCurrencyDirectory.
   function selectCurrency(iso) {
-    document.getElementById('eq-currency').value = iso;
     setEqCurrencyPreference(iso); // тот же ключ, что читает "Настройки" — пикер здесь тоже меняет предпочтение
+    eqCurrencyAuto = null;
+    saveEqCurrencyOnServer(iso, true);
+    setReportsEqCurrency(iso);
+  }
+
+  function setReportsEqCurrency(iso) {
+    document.getElementById('eq-currency').value = iso;
     renderCurrencyPickerButton();
     renderCurrencyPickerList(); // подсветка .active — при СЛЕДУЮЩЕМ открытии список должен показывать уже ЭТУ валюту, не прежнюю
     closeCurrencyPickerList();
@@ -2739,6 +2823,10 @@
       listEl.hidden = !listEl.hidden;
     });
     listEl.addEventListener('click', function (ev) {
+      // Список внутри <label>: без preventDefault клик по строке активирует
+      // label, тот «кликает» кнопку пикера, и только что закрытый список
+      // открывается снова.
+      ev.preventDefault();
       var row = ev.target.closest('.currency-picker-row');
       if (row) selectCurrency(row.getAttribute('data-iso'));
     });
@@ -2766,7 +2854,8 @@
   // "Отчётов" (см. конец renderReports()) и по "Обновить" (wallet-web#12),
   // но не при каждом refreshPeriod(): список валют леджера не зависит от
   // периода/фильтров.
-  // Пока ответ не пришёл, #eq-currency держит "USD" из разметки (см.
+  // Пока ответ не пришёл, #eq-currency держит заглушку из разметки —
+  // сохранённый в localStorage код или EUR (eqCurrencyPlaceholder, см.
   // renderReports) — с ним отчёты открываются сразу, кнопка пикера при этом
   // показывает пустой флаг-заглушку (currencyDirectory ещё пуст).
   function loadCurrencies() {
@@ -2774,32 +2863,83 @@
       .then(function (data) {
         // Пустой справочник (леджера нет вовсе и ни одной ОБЩЕЙ валюты в
         // схеме — см. README wallet-api) — не заменять список валют
-        // буквально пустым, заглушка "USD" в кнопке так и останется висеть.
+        // буквально пустым, заглушка в кнопке так и останется висеть.
         if (!data || !data.currencies.length) return;
-        currencyDirectory = data.currencies;
-        currencySymbolByIso = {};
-        data.currencies.forEach(function (c) { currencySymbolByIso[c.iso_code] = c.symbol; });
-
-        var isoList = data.currencies.map(function (c) { return c.iso_code; });
-        var current = eqCurrencyValue();
-        renderCurrencyPickerList();
-        renderCurrencyPickerButton();
-        renderSettingsCurrencyPickerList(); // перезапрос после записи валюты (D3) — оба пикера; вне своего экрана — no-op
-        renderSettingsCurrencyPickerButton();
-        renderCurCurrencies(); // вкладка "Справочник валют" могла открыться раньше, чем пришёл справочник
-        // Заглушка "USD" могла не совпасть ни с одной реальной валютой этого
-        // леджера (у него может не быть USD вовсе) — тогда молча остались бы
-        // висеть под несуществующей валютой. Вместо этого явно берём первую
-        // валюту СПИСКА ПИКЕРА (справочник ORDER BY iso_code на сервере, см.
-        // reports_repo.hpp, без скрытых из эквивалента — eqPickerCurrencies)
-        // и перезапрашиваем период под неё — иначе KPI на "Обзоре"
-        // продолжали бы грузиться под "USD" и, если её правда нет, падать
-        // 400 "неизвестный ISO-код".
-        if (isoList.length && isoList.indexOf(current) < 0) {
-          selectCurrency(eqPickerCurrencies(null)[0].iso_code); // сам зовёт renderCurrencyPickerButton()+refreshPeriod()
-        }
+        applyCurrencyDirectory(data);
       })
       .catch(function () { /* справочник недоступен — молча остаёмся со значением по умолчанию */ });
+  }
+
+  // Начальная валюта выбирается один раз за загрузку страницы, по первому
+  // успешному ответу справочника (user-eq-currency): preferred_eq_currency
+  // (выбор на сервере, с любого устройства) → localStorage, если код есть в
+  // справочнике → EUR, если есть и не скрыт → первая нескрытая. Дальше
+  // (повторный заход в «Отчёты», «Обновить») сервер не перекрывает текущую
+  // валюту: иначе после неудачного PUT «Обновить» молча откатил бы выбор
+  // пользователя. На «Отчётах» — только если #eq-currency всё ещё держит
+  // заглушку разметки: F5 с другим eq в hash (applyReportsHistoryState)
+  // восстанавливает именно его.
+  var eqCurrencyInitialDone = false;
+  var eqCurrencyPlaceholderIso = ''; // что renderReports положил в #eq-currency
+
+  // EUR — если есть у леджера и не скрыт из эквивалента; иначе первая
+  // валюта списка пикера (справочник ORDER BY iso_code на сервере, см.
+  // reports_repo.hpp; без скрытых — eqPickerCurrencies).
+  function autoEqCurrency() {
+    var list = eqPickerCurrencies(null);
+    var eur = list.filter(function (c) { return c.iso_code === 'EUR' && c.show_in_equivalent !== false; })[0];
+    return eur ? 'EUR' : list[0].iso_code;
+  }
+
+  function applyCurrencyDirectory(data) {
+    currencyDirectory = data.currencies;
+    currencySymbolByIso = {};
+    data.currencies.forEach(function (c) { currencySymbolByIso[c.iso_code] = c.symbol; });
+
+    var isoList = data.currencies.map(function (c) { return c.iso_code; });
+    var onReports = !!document.getElementById('eq-currency');
+    var current = onReports ? eqCurrencyValue() : settingsCurrencyValue();
+    var pick = null;
+
+    if (!eqCurrencyInitialDone) {
+      eqCurrencyInitialDone = true;
+      if (!onReports || current === eqCurrencyPlaceholderIso) {
+        // В режиме «Посмотреть как клиент» справочник чужой — серверный
+        // выбор и перенос не применяются (см. saveEqCurrencyOnServer).
+        var preferred = viewAsUser || typeof data.preferred_eq_currency !== 'string' ? null
+          : data.preferred_eq_currency.toUpperCase();
+        var stored = getEqCurrencyPreference();
+        if (preferred && isoList.indexOf(preferred) >= 0) {
+          pick = preferred;
+          setEqCurrencyPreference(pick); // выбор с другого устройства — и в этот браузер
+          eqCurrencyAuto = null;
+        } else if (stored && isoList.indexOf(stored) >= 0) {
+          pick = stored;
+          eqCurrencyAuto = null;
+          // Перенос: на сервере пусто, а в этом браузере выбор есть — один
+          // раз отправить. Автовыбор (EUR/первая) не переносится.
+          if (!viewAsUser && data.preferred_eq_currency == null) saveEqCurrencyOnServer(pick, false);
+        }
+      }
+    }
+    if (!pick && isoList.indexOf(current) >= 0) pick = current;
+    // Текущая валюта (заглушка или сохранённая) могла не совпасть ни с
+    // одной реальной валютой этого леджера — тогда молча остались бы висеть
+    // под несуществующей валютой, и KPI на "Обзоре" падали бы 400
+    // "неизвестный ISO-код". Берём автовыбор и перезапрашиваем период.
+    if (!pick) {
+      pick = autoEqCurrency();
+      eqCurrencyAuto = pick;
+    }
+
+    if (onReports) {
+      if (pick !== current) setReportsEqCurrency(pick); // сам перерисует кнопку/список и позовёт refreshPeriod()
+      renderCurrencyPickerList();
+      renderCurrencyPickerButton();
+    }
+    renderSettingsCurrencyPickerList(); // перезапрос после записи валюты (D3) — оба пикера; вне своего экрана — no-op
+    renderSettingsCurrencyPickerButton();
+    renderCurCurrencies(); // вкладка "Справочник валют" могла открыться раньше, чем пришёл справочник
   }
 
   // Перезапрос справочника после записи валюты (POST/PATCH/DELETE
@@ -11076,7 +11216,7 @@
       view: m[1],
       periodFrom: params.from,
       periodTo: params.to,
-      eqCurrency: params.eq || 'USD',
+      eqCurrency: params.eq || eqCurrencyPlaceholder(),
       cmpMode: params.cmp || 'none',
       aiImport: m[1] === 'ai' && m[2] ? m[2] : '',
     };
@@ -11452,6 +11592,7 @@
     curIconQuery = '';
     curCurrenciesError = '';
     resetAi(); // незавершённый разбор прошлого захода снимается, карточка не переживает ухода
+    eqCurrencyPlaceholderIso = eqCurrencyPlaceholder(); // см. applyCurrencyDirectory — заглушка ли ещё в #eq-currency
     // Сохранённое состояние — сразу в разметке, а не toggle-ом после вставки:
     // иначе при каждом заходе на "Отчёты" было бы видно, как свёрнутый
     // сайдбар на мгновение разворачивается и тут же сворачивается обратно
@@ -11516,20 +11657,20 @@
       // изменился, они как читали/писали #eq-currency.value, так и читают/
       // пишут, вне зависимости от того, что теперь стоит за этим id).
       // Список — заполняется loadCurrencies() из GET /api/reports/currencies
-      // (справочник); стартовое значение — сохранённое в "Настройках"
-      // предпочтение (localStorage, см. getEqCurrencyPreference), либо
-      // "USD" по умолчанию — с ним "Отчёты" открываются сразу, не дожидаясь
-      // ответа сети.
+      // (справочник); стартовое значение — заглушка eqCurrencyPlaceholder()
+      // (localStorage или EUR) — с ней "Отчёты" открываются сразу, не
+      // дожидаясь ответа сети; выбор на сервере применяет applyCurrencyDirectory.
       '<label class="currency-picker" id="currency-picker">Валюта эквивалента' +
       '<button type="button" class="currency-picker-btn" id="currency-picker-btn">' +
       '<span class="currency-picker-display" id="currency-picker-display"><span class="currency-picker-flag"></span><span>' +
-      escapeHtml(getEqCurrencyPreference() || 'USD') + '</span></span>' +
+      escapeHtml(eqCurrencyPlaceholderIso) + '</span></span>' +
       '<svg class="currency-picker-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">' +
       '<path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
       'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
       '</button>' +
-      '<input type="hidden" id="eq-currency" value="' + escapeHtml(getEqCurrencyPreference() || 'USD') + '">' +
+      '<input type="hidden" id="eq-currency" value="' + escapeHtml(eqCurrencyPlaceholderIso) + '">' +
       '<div class="currency-picker-list" id="currency-picker-list" hidden></div>' +
+      eqCurrencySaveErrorHtml('currency-save-error') +
       '</label>' +
       '<label>С<input type="date" id="period-from" value="' + (periodPreferenceFrom() || defaultPeriodFromIso()) + '"></label>' +
       '<label>По<input type="date" id="period-to" value="' + (periodPreferenceTo() || defaultPeriodToIso()) + '"></label>' +
@@ -11737,6 +11878,7 @@
       fetch('/auth/logout', { method: 'POST', credentials: 'include' }).then(function () {
         viewAsUser = null; // не переживает выход — следующий вход (даже другим человеком) не должен унаследовать чужой режим просмотра
         chatForget(); // лента чата тоже (add-web-chat)
+        resetEqCurrencySession(); // следующий вход снова начинает с выбора на сервере
         renderLogin();
       });
     });
