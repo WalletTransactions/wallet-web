@@ -68,16 +68,21 @@
     return m ? decodeURIComponent(m[1]) : null;
   }
 
+  // Экранирует и кавычки: результат вставляется не только в текст, но и в
+  // значения атрибутов в "…" (title= с именем категории, value= с комментарием,
+  // строки импортированной выписки). Прежний вариант через textContent/innerHTML
+  // кавычки не трогал — имя `x" onmouseover="…` выходило из атрибута (stored XSS).
+  // null → '' как у textContent; прочее — через String().
+  var HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   function escapeHtml(s) {
-    var div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
+    if (s === null) return '';
+    return String(s).replace(/[&<>"']/g, function (c) { return HTML_ESCAPES[c]; });
   }
 
-  // escapeHtml не трогает кавычки — для значения атрибута в "…", куда идёт
-  // текст, набранный пользователем (имя MCP-токена в data-name).
+  // Синоним escapeHtml (он сам экранирует кавычки) — оставлен, чтобы места,
+  // явно помеченные как атрибутные, читались как раньше.
   function escapeAttr(s) {
-    return escapeHtml(s).replace(/"/g, '&quot;');
+    return escapeHtml(s);
   }
 
   // .card.wide — существовавший, но раньше нигде не применявшийся класс в
