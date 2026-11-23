@@ -282,6 +282,10 @@ tr.device-current { background: var(--sand2); }
   overflow-y: auto; background: var(--surf); border: 1px solid var(--l14); border-radius: 14px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .16); padding: 6px;
 }
+/* «Не удалось сохранить валюту на сервере» под пикером (user-eq-currency) —
+   тот же вид, что .cur-field-error; выбор при этом не откатывается. */
+.eq-currency-save-err { display: block; margin: 2px 0 0; font-size: 12px; font-weight: 500; color: var(--exp); }
+.eq-currency-save-err[hidden] { display: none; }
 .currency-picker-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 10px; cursor: pointer; }
 .currency-picker-row:hover { background: var(--sand2); }
 .currency-picker-row.active { background: var(--sand3); }
