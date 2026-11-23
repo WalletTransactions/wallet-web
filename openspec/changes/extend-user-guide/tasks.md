@@ -10,8 +10,8 @@ extend-user-guide` и живые вопросы к «Справке» после
 
 ## 2. Поставка
 
-- [ ] 2.1 PR из `extend-user-guide` с `gh pr merge --squash --auto`; проверка: CI зелёный, PR влит
-- [ ] 2.2 Синхронизировать дельту в `openspec/specs/user-guide/spec.md` (`openspec-sync-specs`) до приёмки — файлы в `changes/` видит только администратор; проверка: `openspec validate --specs` проходит, PR влит
+- [x] 2.1 PR из `extend-user-guide` с `gh pr merge --squash --auto`; проверка: CI зелёный, PR влит — PR #61 влит 2026-11-23 (squash, автослияние)
+- [ ] 2.2 Синхронизировать дельту в `openspec/specs/user-guide/spec.md` (`openspec-sync-specs`) до приёмки — файлы в `changes/` видит только администратор; проверка: `openspec validate --specs` проходит, PR влит — 2026-11-23: 24 требования дописаны в конец `openspec/specs/user-guide/spec.md` (всего 36), `21 passed, 0 failed`; в `--strict` осталось одно старое предупреждение >500 у «Как перевести деньги между своими кошельками» (не из этого change)
 - [ ] 2.3 Залить индекс `wallet-web` на test (`wallet-infra/infra/env/docs-index.sh test wallet-web`); проверка: `200` с ненулевым `chunks`
 
 ## 3. Приёмка живыми вопросами (роль `user`)
